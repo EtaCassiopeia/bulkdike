@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      - run: sbt check
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java-version: ['17', '21']
+        scala-version: ['3.3.8', '3.9.0']
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          java-version: ${{ matrix.java-version }}
+          distribution: 'temurin'
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      - run: sbt "++${{ matrix.scala-version }} test" "++${{ matrix.scala-version }} examples/run"
+
+  formal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+      - name: Fetch TLA+ tools
+        run: curl -fsSL -o tla2tools.jar https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+      - name: Model-check the protocol
+        run: formal/check.sh "$PWD/tla2tools.jar"
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [format, test, formal]
+    if: always()
+    steps:
+      - name: Fail if any required check failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: |
+          echo "Required checks did not all succeed: ${{ toJson(needs) }}" >&2
+          exit 1
+      - run: echo "format, test and formal all succeeded"
