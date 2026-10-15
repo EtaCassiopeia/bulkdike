@@ -1,110 +1,52 @@
 # BulkDike
 
-A ZIO 2 micro-batching bulkhead. Concurrent callers each ask for one thing. BulkDike groups their inputs into
-batched calls to an external system. It caps how many batch calls run at once and how many inputs may wait, and gives
-every caller its own share of the batch result.
+A ZIO 2 micro-batching bulkhead. It coalesces concurrent calls into batched calls to an external system, caps how
+many batches run at once and how many inputs may wait, and gives each caller its own share of the result.
 
-It started as the queueing core of
+It is a Scala 3 rewrite of the queueing core of
 [api-aggregation-service](https://github.com/EtaCassiopeia/api-aggregation-service), inspired by
-[rezilience](https://github.com/svroonland/rezilience)'s `Bulkhead`. This is a rewrite for Scala 3 and ZIO 2.1.
+[rezilience](https://github.com/svroonland/rezilience).
 
 ```scala
-import bulkdike.*
-import zio.*
-
 val config = BulkDikeConfig.make(
-  maxBatchSize       = 5,           // dispatch as soon as 5 inputs are waiting...
-  maxBatchDelay      = 5.seconds,   // ...or 5s after the oldest of them arrived
-  maxInFlightBatches = 2,           // at most 2 batch calls at a time
-  maxQueueing        = 50           // beyond 50 waiting inputs, reject immediately
+  maxBatchSize       = 5,         // dispatch when 5 inputs are waiting
+  maxBatchDelay      = 5.seconds, // or 5s after the oldest arrived
+  maxInFlightBatches = 2,         // concurrent batch calls
+  maxQueueing        = 50         // beyond this, reject immediately
 )
 
-// One upstream call answers many keys; each caller gets the value for its own key.
-val prices: URIO[Scope, BulkDike[String, PricingError, Option[Price]]] =
-  ZIO.fromEither(config).orDie.flatMap(BulkDike.keyed(_)(countries => pricingApi.fetch(countries)))
-
-prices.flatMap(dike => dike("NL"))   // IO[BulkDikeError[PricingError], Option[Price]]
+for
+  cfg   <- ZIO.fromEither(config)
+  dike  <- BulkDike.keyed(cfg)((countries: NonEmptyChunk[String]) => pricingApi.fetch(countries))
+  price <- dike("NL") // IO[BulkDikeError[E], Option[Price]]
+yield price
 ```
 
-For batch results that are not a map, `BulkDike.make(config)(call)(extract)` takes any
-`NonEmptyChunk[I] => ZIO[R, E, B]` together with an `(I, B) => A` that picks out each caller's part.
+`BulkDike.make(config)(call)(extract)` handles batch results that aren't maps.
 
 ## Behaviour
 
-| Situation | What the caller sees |
-|---|---|
-| Its batch call succeeds | its own result (`extract(input, batchResult)`) |
-| Its batch call fails with `e` | `BulkDikeError.Failed(e)`, the same for everyone in that batch |
-| Its batch call dies, or `extract` throws | the defect (a throwing `extract` affects only that caller) |
-| `maxQueueing` inputs are already waiting | `BulkDikeError.Rejected`, straight away; nothing is sent |
-| The caller is interrupted before dispatch | its input is left out of the batch |
-| The scope closes while it waits | it is interrupted, whether queued, being assembled or in flight |
-| It calls after the scope closed | it is interrupted |
+- A failed batch call fails every caller in the batch with `BulkDikeError.Failed(e)`; later calls are still served.
+- When the queue is full, callers get `BulkDikeError.Rejected` straight away.
+- An interrupted caller's input is dropped from its batch.
+- Closing the scope interrupts every waiting caller; none is left hanging.
 
-After a failed or defective batch the BulkDike keeps serving later calls. `metrics` reports queued inputs and running
-batches.
+Put retries, timeouts and circuit breakers around the batch call. See the
+[example](examples/src/main/scala/bulkdike/examples/PricingAggregation.scala), which uses rezilience for this.
 
-Retries, timeouts and circuit breaking belong around the batch call, where one policy decision covers the whole
-batch. See [`PricingAggregation`](examples/src/main/scala/bulkdike/examples/PricingAggregation.scala), which wraps it
-with rezilience's `Timeout`, `Retry` and `CircuitBreaker`.
+## Verification
 
-### What changed from the original
-
-| Original (ZIO 1, Scala 2.13) | Now |
-|---|---|
-| Rejection was checked after the stream dequeued an input, and `offer` on a bounded queue suspends, so callers piled up instead of being rejected | Admission decides immediately, under a lock it shares with shutdown |
-| `maxInFlightCalls` limited how many promises were completed at once; batch calls ran one after another | `maxInFlightBatches` limits concurrent batch calls (one worker per slot) |
-| `groupedWithin` restarts its timer after every emission, so a partial batch could leave long before the oldest input had waited `maxBatchDelay` | The deadline is the oldest input's arrival time plus `maxBatchDelay` |
-| A batch call that died killed the stream, and every waiting caller hung | Failures and defects reach the batch's callers; later calls are still served |
-| An interrupted caller's input was still sent | It is dropped before dispatch |
-| Closing the scope left waiting callers hanging | Every waiting caller is interrupted |
-| cats `Semigroup` combined the inputs | The batch call receives a `NonEmptyChunk` of them |
-| Settings were unchecked defaults | `BulkDikeConfig.make` validates and reports every problem at once |
-
-## How it is verified
-
-Each layer catches a kind of bug the others miss.
-
-| Layer | Where | What it establishes |
-|---|---|---|
-| Unit tests | `BulkDikeSpec` | Each documented behaviour, on the deterministic `TestClock` |
-| Reference model | `BulkDikeModelSpec` | Over random sequences of arrivals and time steps, the real BulkDike dispatches exactly the batches an executable specification predicts, with the same contents, order and instants |
-| Deterministic simulation | `Simulation`, `BulkDikePropertySpec` | Random workloads (bursts, latencies, failures, defects, interrupted callers, mid-flight shutdown) run on virtual time. Every trace is checked: no input sent twice, none sent after rejection or after its caller gave up, batch size and concurrency within limits, no partial batch before its deadline, every caller answered correctly, none stranded |
-| Stress | `BulkDikeStressSpec` | The same accounting on the real multi-threaded scheduler, with thousands of callers and closes racing arrivals, repeated many times |
-| Formal model | `formal/BulkDike.tla` | TLC explores every interleaving of a small instance (416,177 states). No input is sent twice, and every admitted caller is eventually answered (liveness). Three weakened variants must fail: no admission lock, no cleanup when a worker is interrupted, and taking entries without recording them in the same uninterruptible step. Each one strands a caller, which proves the mechanism is needed |
-| Mutation testing | Stryker4s, `mutation/semantic-mutants.py` | Checks that the tests notice injected bugs. Stryker covers syntactic mutants. The semantic harness injects 17 hand-written concurrency bugs (missing interruption handling, missing locks, off-by-one deadlines, wrong worker counts and more) into a scratch copy and runs the suite against each |
-
-### What the mutation runs showed
-
-The tests catch 15 of the 17 semantic mutants. The other two are races only a few instructions wide, which no
-scheduling-based test hits reliably: an admission check that is not serialised with close, and a `takeUpTo` that is
-not uninterruptible. Both are exactly what the weakened TLA+ variants describe, and TLC finds the stranded caller in
-under ten steps. The harness reports these two as covered by the formal model; any other survivor fails the run.
-
-Mutation testing also found two real gaps in an earlier version of the suite, both now covered. Error messages were
-never asserted. And nothing checked that an input which goes overdue while every batch slot is busy is sent as soon as a
-slot frees, rather than having its delay restarted.
+- **Unit, model-based, simulation and stress tests**: random workloads run on virtual time and on the real scheduler.
+  Every trace is checked against the contract.
+- **TLA+** (`formal/`): TLC checks every interleaving of the concurrency protocol, for both safety and liveness.
+- **Mutation testing**: Stryker4s, plus 17 hand-written concurrency bugs (`mutation/`). All are caught by the tests or
+  the formal model.
 
 ```sh
-sbt test                                   # everything except the two below
-formal/check.sh path/to/tla2tools.jar      # model checking (~1 min)
-sbt core/stryker                           # syntactic mutation testing
-python3 mutation/semantic-mutants.py       # semantic mutation testing
-```
-
-`BULKDIKE_SAMPLES=n` changes how many cases the randomised suites try. Raise it before a release to search longer,
-or lower it to keep mutation runs affordable.
-
-## Build
-
-Scala 3.3 LTS (the published baseline) and 3.9, ZIO 2.1, sbt 2. JDK 17 or newer.
-
-```sh
-sbt check          # formatting
 sbt test
-sbt examples/run
+formal/check.sh path/to/tla2tools.jar
+sbt core/stryker
+python3 mutation/semantic-mutants.py
 ```
 
-## License
-
-Apache 2.0
+Scala 3.3 LTS / 3.9, ZIO 2.1, sbt 2, JDK 17+. Apache 2.0.
