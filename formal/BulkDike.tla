@@ -12,11 +12,13 @@
 (* Two switches weaken the protocol, to show each mechanism is needed:    *)
 (*   SerialisedAdmission - admission and "stop accepting" share a lock     *)
 (*   CleanupOnInterrupt  - an interrupted worker releases what it took     *)
-(* The implementation has both; turning either off strands a caller.      *)
+(*   AtomicTake          - taking entries off the queue and recording     *)
+(*                         them as owned is one uninterruptible step      *)
+(* The implementation has all three; turning any off strands a caller.   *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
-CONSTANTS Callers, Workers, MaxBatch, MaxQueue, SerialisedAdmission, CleanupOnInterrupt
+CONSTANTS Callers, Workers, MaxBatch, MaxQueue, SerialisedAdmission, CleanupOnInterrupt, AtomicTake
 
 ASSUME MaxBatch >= 1 /\ MaxQueue >= MaxBatch
 
@@ -30,9 +32,10 @@ VARIABLES
   taken,     \* entries a worker has taken off the queue and owns until its batch completes
   batch,     \* entries of a worker's running batch whose result is not yet set
   sent,      \* how many batch calls carried each caller's input
-  phase      \* lifecycle of the enclosing scope
+  phase,     \* lifecycle of the enclosing scope
+  inHand     \* entries taken off the queue but not yet recorded in `taken` (only without AtomicTake)
 
-vars == <<caller, promise, queue, accepting, lock, worker, taken, batch, sent, phase>>
+vars == <<caller, promise, queue, accepting, lock, worker, taken, batch, sent, phase, inHand>>
 
 Free == "free"
 Outcomes == {"succeeded", "failed"}
@@ -48,6 +51,7 @@ TypeOK ==
   /\ batch \in [Workers -> SUBSET Callers]
   /\ sent \in [Callers -> Nat]
   /\ phase \in {"open", "closing", "stopped", "drained"}
+  /\ inHand \in [Workers -> SUBSET Callers]
 
 Init ==
   /\ caller = [c \in Callers |-> "idle"]
@@ -60,6 +64,7 @@ Init ==
   /\ batch = [w \in Workers |-> {}]
   /\ sent = [c \in Callers |-> 0]
   /\ phase = "open"
+  /\ inHand = [w \in Workers |-> {}]
 
 Interrupt(cs) == [c \in Callers |-> IF c \in cs /\ promise[c] = "pending" THEN "interrupted" ELSE promise[c]]
 
@@ -78,20 +83,20 @@ Submit(c) ==
      ELSE IF SerialisedAdmission
           THEN Enqueue(c)
           ELSE caller' = [caller EXCEPT ![c] = "admitted"] /\ UNCHANGED queue
-  /\ UNCHANGED <<promise, accepting, lock, worker, taken, batch, sent, phase>>
+  /\ UNCHANGED <<promise, accepting, lock, worker, taken, batch, sent, phase, inHand>>
 
 (* Only without SerialisedAdmission: the offer happens after, and apart from, the check. *)
 Offer(c) ==
   /\ caller[c] = "admitted"
   /\ Enqueue(c)
-  /\ UNCHANGED <<promise, accepting, lock, worker, taken, batch, sent, phase>>
+  /\ UNCHANGED <<promise, accepting, lock, worker, taken, batch, sent, phase, inHand>>
 
 (* The caller is interrupted while awaiting its result. *)
 Cancel(c) ==
   /\ caller[c] = "waiting"
   /\ promise[c] = "pending"
   /\ promise' = [promise EXCEPT ![c] = "interrupted"]
-  /\ UNCHANGED <<caller, queue, accepting, lock, worker, taken, batch, sent, phase>>
+  /\ UNCHANGED <<caller, queue, accepting, lock, worker, taken, batch, sent, phase, inHand>>
 
 Alive(w) == worker[w] # "dead"
 
@@ -104,7 +109,7 @@ TakeFirst(w) ==
   /\ taken' = [taken EXCEPT ![w] = {Head(queue)}]
   /\ queue' = Tail(queue)
   /\ worker' = [worker EXCEPT ![w] = "assembling"]
-  /\ UNCHANGED <<caller, promise, accepting, batch, sent, phase>>
+  /\ UNCHANGED <<caller, promise, accepting, batch, sent, phase, inHand>>
 
 (* `fill`: `takeUpTo` the room left in the batch, recorded in `taken` in the same uninterruptible step. *)
 Fill(w) ==
@@ -113,14 +118,26 @@ Fill(w) ==
   /\ queue # <<>>
   /\ LET room == MaxBatch - Cardinality(taken[w])
          n    == IF Len(queue) < room THEN Len(queue) ELSE room
-     IN  /\ taken' = [taken EXCEPT ![w] = @ \cup {queue[i] : i \in 1..n}]
-         /\ queue' = SubSeq(queue, n + 1, Len(queue))
+         got  == {queue[i] : i \in 1..n}
+     IN  /\ queue' = SubSeq(queue, n + 1, Len(queue))
+         /\ IF AtomicTake
+            THEN taken' = [taken EXCEPT ![w] = @ \cup got] /\ UNCHANGED inHand
+            ELSE inHand' = [inHand EXCEPT ![w] = @ \cup got] /\ UNCHANGED taken
+  /\ inHand[w] = {}
   /\ UNCHANGED <<caller, promise, accepting, lock, worker, batch, sent, phase>>
+
+(* Only without AtomicTake: the entries just taken are recorded as owned, in a later step. *)
+Record(w) ==
+  /\ inHand[w] # {}
+  /\ taken' = [taken EXCEPT ![w] = @ \cup inHand[w]]
+  /\ inHand' = [inHand EXCEPT ![w] = {}]
+  /\ UNCHANGED <<caller, promise, queue, accepting, lock, worker, batch, sent, phase>>
 
 (* The batch is full or its deadline passed (time is abstracted: a deadline may pass at any moment). *)
 (* `run` leaves out callers that were interrupted while waiting.                                     *)
 Dispatch(w) ==
   /\ worker[w] = "assembling"
+  /\ inHand[w] = {}
   /\ lock' = Free
   /\ LET live == {c \in taken[w] : promise[c] = "pending"} IN
        IF live = {}
@@ -131,7 +148,7 @@ Dispatch(w) ==
             /\ batch' = [batch EXCEPT ![w] = live]
             /\ sent' = [c \in Callers |-> IF c \in live THEN sent[c] + 1 ELSE sent[c]]
             /\ UNCHANGED taken
-  /\ UNCHANGED <<caller, promise, queue, accepting, phase>>
+  /\ UNCHANGED <<caller, promise, queue, accepting, phase, inHand>>
 
 (* The batch call has returned: results are set one caller at a time, interruptibly. *)
 Complete(w, c) ==
@@ -140,20 +157,20 @@ Complete(w, c) ==
   /\ \E outcome \in Outcomes :
        promise' = [promise EXCEPT ![c] = IF @ = "pending" THEN outcome ELSE @]
   /\ batch' = [batch EXCEPT ![w] = @ \ {c}]
-  /\ UNCHANGED <<caller, queue, accepting, lock, worker, taken, sent, phase>>
+  /\ UNCHANGED <<caller, queue, accepting, lock, worker, taken, sent, phase, inHand>>
 
 Finish(w) ==
   /\ worker[w] = "running"
   /\ batch[w] = {}
   /\ worker' = [worker EXCEPT ![w] = "idle"]
   /\ taken' = [taken EXCEPT ![w] = {}]
-  /\ UNCHANGED <<caller, promise, queue, accepting, lock, batch, sent, phase>>
+  /\ UNCHANGED <<caller, promise, queue, accepting, lock, batch, sent, phase, inHand>>
 
 (* The enclosing scope starts closing. *)
 BeginClose ==
   /\ phase = "open"
   /\ phase' = "closing"
-  /\ UNCHANGED <<caller, promise, queue, accepting, lock, worker, taken, batch, sent>>
+  /\ UNCHANGED <<caller, promise, queue, accepting, lock, worker, taken, batch, sent, inHand>>
 
 (* Scope finalizer, part 1: interrupt each worker; its `onInterrupt` releases what it took. *)
 KillWorker(w) ==
@@ -164,6 +181,7 @@ KillWorker(w) ==
   /\ lock' = IF lock = w THEN Free ELSE lock
   /\ taken' = [taken EXCEPT ![w] = {}]
   /\ batch' = [batch EXCEPT ![w] = {}]
+  /\ inHand' = [inHand EXCEPT ![w] = {}] \* never recorded, so nobody releases them
   /\ UNCHANGED <<caller, queue, accepting, sent, phase>>
 
 (* Scope finalizer, part 2 (`close`): stop admission, under the same lock as `enqueue`... *)
@@ -172,7 +190,7 @@ StopAccepting ==
   /\ \A w \in Workers : ~Alive(w)
   /\ accepting' = FALSE
   /\ phase' = "stopped"
-  /\ UNCHANGED <<caller, promise, queue, lock, worker, taken, batch, sent>>
+  /\ UNCHANGED <<caller, promise, queue, lock, worker, taken, batch, sent, inHand>>
 
 (* ...then release every caller still queued. *)
 Drain ==
@@ -180,9 +198,9 @@ Drain ==
   /\ promise' = Interrupt({queue[i] : i \in 1..Len(queue)})
   /\ queue' = <<>>
   /\ phase' = "drained"
-  /\ UNCHANGED <<caller, accepting, lock, worker, taken, batch, sent>>
+  /\ UNCHANGED <<caller, accepting, lock, worker, taken, batch, sent, inHand>>
 
-WorkerStep(w) == TakeFirst(w) \/ Fill(w) \/ Dispatch(w) \/ Finish(w) \/ \E c \in Callers : Complete(w, c)
+WorkerStep(w) == TakeFirst(w) \/ Fill(w) \/ Record(w) \/ Dispatch(w) \/ Finish(w) \/ \E c \in Callers : Complete(w, c)
 
 Next ==
   \/ \E c \in Callers : Submit(c) \/ Offer(c) \/ Cancel(c)

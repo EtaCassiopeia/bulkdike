@@ -3,6 +3,7 @@
 #   BulkDike.cfg                - the protocol as implemented: must pass (safety and liveness).
 #   UnserialisedAdmission.cfg   - without the admission lock: must FAIL, proving the lock is needed.
 #   NoCleanupOnInterrupt.cfg    - without worker cleanup: must FAIL, proving the cleanup is needed.
+#   NonAtomicTake.cfg           - take and record as separate steps: must FAIL, proving the atomicity is needed.
 # Usage: formal/check.sh [path/to/tla2tools.jar]   (defaults to $TLA2TOOLS or ./tla2tools.jar)
 set -euo pipefail
 
@@ -18,7 +19,7 @@ tlc() {
 echo "== BulkDike (expected: no error)"
 tlc BulkDike | tail -n 4
 
-for variant in UnserialisedAdmission NoCleanupOnInterrupt; do
+for variant in UnserialisedAdmission NoCleanupOnInterrupt NonAtomicTake; do
   echo "== $variant (expected: NoneStrandedAfterClose violated)"
   if out="$(tlc "$variant")"; then
     echo "$out" | tail -n 4

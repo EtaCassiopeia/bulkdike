@@ -71,8 +71,19 @@ Each layer catches a kind of bug the others miss.
 | Reference model | `BulkDikeModelSpec` | Over random sequences of arrivals and time steps, the real BulkDike dispatches exactly the batches an executable specification predicts, with the same contents, order and instants |
 | Deterministic simulation | `Simulation`, `BulkDikePropertySpec` | Random workloads (bursts, latencies, failures, defects, interrupted callers, mid-flight shutdown) run on virtual time. Every trace is checked: no input sent twice, none sent after rejection or after its caller gave up, batch size and concurrency within limits, no partial batch before its deadline, every caller answered correctly, none stranded |
 | Stress | `BulkDikeStressSpec` | The same accounting on the real multi-threaded scheduler, with thousands of callers and closes racing arrivals, repeated many times |
-| Formal model | `formal/BulkDike.tla` | TLC explores every interleaving of a small instance (about 416k states). No input is sent twice, and every admitted caller is eventually answered (liveness). Two weakened variants must fail, which shows that both the admission lock and the cleanup on worker interruption are necessary |
-| Mutation testing | Stryker4s, `mutation/semantic-mutants.py` | Measures whether the tests notice injected bugs: syntactic ones via Stryker, and hand-written concurrency bugs (missing interruption handling, missing locks, off-by-one deadlines) via the semantic harness |
+| Formal model | `formal/BulkDike.tla` | TLC explores every interleaving of a small instance (416,177 states). No input is sent twice, and every admitted caller is eventually answered (liveness). Three weakened variants must fail: no admission lock, no cleanup when a worker is interrupted, and taking entries without recording them in the same uninterruptible step. Each one strands a caller, which proves the mechanism is needed |
+| Mutation testing | Stryker4s, `mutation/semantic-mutants.py` | Checks that the tests notice injected bugs. Stryker covers syntactic mutants. The semantic harness injects 17 hand-written concurrency bugs (missing interruption handling, missing locks, off-by-one deadlines, wrong worker counts and more) into a scratch copy and runs the suite against each |
+
+### What the mutation runs showed
+
+The tests catch 15 of the 17 semantic mutants. The other two are races only a few instructions wide, which no
+scheduling-based test hits reliably: an admission check that is not serialised with close, and a `takeUpTo` that is
+not uninterruptible. Both are exactly what the weakened TLA+ variants describe, and TLC finds the stranded caller in
+under ten steps. The harness reports these two as covered by the formal model; any other survivor fails the run.
+
+Mutation testing also found two real gaps in an earlier version of the suite, both now covered. Error messages were
+never asserted. And nothing checked that an input which goes overdue while every batch slot is busy is sent as soon as a
+slot frees, rather than having its delay restarted.
 
 ```sh
 sbt test                                   # everything except the two below
