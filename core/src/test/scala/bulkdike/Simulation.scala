@@ -112,64 +112,63 @@ object Simulation:
       cancelled <- Ref.make(Map.empty[Int, Long])
 
       call = (ids: NonEmptyChunk[Int]) =>
-               for
-                 now   <- Clock.nanoTime
-                 _     <- late.update(_ + 1).whenZIO(closed.get)
-                 batch <- batches.modify { bs =>
-                            val b = Batch(bs.size, ids.toChunk, now, s.behaviourOf(bs.size))
-                            (b, bs :+ b)
-                          }
-                 track  = active.updateAndGet(_ + 1).flatMap(n => peak.update(_ max n))
-                 result <- ZIO.acquireReleaseWith(track)(_ => active.update(_ - 1)) { _ =>
-                             ZIO.sleep(batch.behaviour.latency) *> (batch.behaviour match
-                               case Behaviour.Succeed(_) => ZIO.succeed(ids.map(id => id -> id * 2).toMap)
-                               case Behaviour.Fail(_)    => ZIO.fail(s"batch-${batch.index}")
-                               case Behaviour.Die(_)     => ZIO.die(Boom(batch.index))
-                             )
-                           }
-               yield result
+        for
+          now   <- Clock.nanoTime
+          _     <- late.update(_ + 1).whenZIO(closed.get)
+          batch <- batches.modify { bs =>
+            val b = Batch(bs.size, ids.toChunk, now, s.behaviourOf(bs.size))
+            (b, bs :+ b)
+          }
+          track = active.updateAndGet(_ + 1).flatMap(n => peak.update(_ max n))
+          result <- ZIO.acquireReleaseWith(track)(_ => active.update(_ - 1)) { _ =>
+            ZIO.sleep(batch.behaviour.latency) *> (batch.behaviour match
+              case Behaviour.Succeed(_) => ZIO.succeed(ids.map(id => id -> id * 2).toMap)
+              case Behaviour.Fail(_)    => ZIO.fail(s"batch-${batch.index}")
+              case Behaviour.Die(_)     => ZIO.die(Boom(batch.index)))
+          }
+        yield result
 
       submit = (dike: BulkDike[Int, String, Int], sub: Submission, id: Int) =>
-                 for
-                   _      <- TestClock.adjust(sub.gapMs.millis).when(sub.gapMs > 0)
-                   now    <- Clock.nanoTime
-                   _      <- submitted.update(_ + (id -> now))
-                   caller <- dike(id).fork
-                   _      <- callers.update(_ + (id -> caller))
-                   _      <- ZIO.foreachDiscard(sub.cancelAfterMs) { ms =>
-                               (ZIO.sleep(ms.millis) *> caller.interrupt.flatMap { exit =>
-                                 Clock.nanoTime.flatMap(at => cancelled.update(_ + (id -> at))).when(exit.isInterrupted)
-                               }).fork
-                             }
-                 yield ()
+        for
+          _      <- TestClock.adjust(sub.gapMs.millis).when(sub.gapMs > 0)
+          now    <- Clock.nanoTime
+          _      <- submitted.update(_ + (id -> now))
+          caller <- dike(id).fork
+          _      <- callers.update(_ + (id -> caller))
+          _      <- ZIO.foreachDiscard(sub.cancelAfterMs) { ms =>
+            (ZIO.sleep(ms.millis) *> caller.interrupt.flatMap { exit =>
+              Clock.nanoTime.flatMap(at => cancelled.update(_ + (id -> at))).when(exit.isInterrupted)
+            }).fork
+          }
+        yield ()
 
       (before, after) = s.closeAfter.fold((s.submissions, Chunk.empty[Submission]))(s.submissions.splitAt)
 
       dike <- ZIO.scoped {
-                for
-                  dike <- BulkDike.make(cfg)(call)((id, results: Map[Int, Int]) => results(id))
-                  _    <- ZIO.foreachDiscard(before.zipWithIndex)((sub, id) => submit(dike, sub, id))
-                  _    <- settleBounded(callers).when(s.closeAfter.isEmpty)
-                yield dike
-              }
-      _    <- closed.set(true)
-      _    <- ZIO.foreachDiscard(after.zipWithIndex)((sub, i) => submit(dike, sub, before.size + i))
-      _    <- settleBounded(callers)
+        for
+          dike <- BulkDike.make(cfg)(call)((id, results: Map[Int, Int]) => results(id))
+          _    <- ZIO.foreachDiscard(before.zipWithIndex)((sub, id) => submit(dike, sub, id))
+          _    <- settleBounded(callers).when(s.closeAfter.isEmpty)
+        yield dike
+      }
+      _ <- closed.set(true)
+      _ <- ZIO.foreachDiscard(after.zipWithIndex)((sub, i) => submit(dike, sub, before.size + i))
+      _ <- settleBounded(callers)
 
       finished <- callers.get.flatMap(cs => ZIO.foreach(cs.toList)((id, f) => f.poll.map(id -> _)))
       trace    <- (batches.get <*> submitted.get <*> cancelled.get <*> peak.get <*> late.get).map {
-                    (bs, sub, canc, pk, lt) =>
-                      Trace(
-                        batches = bs,
-                        outcomes = finished.collect { case (id, Some(exit)) => id -> exit }.toMap,
-                        submittedAt = sub,
-                        cancelledAt = canc,
-                        peakInFlight = pk,
-                        hung = finished.collect { case (id, None) => id }.toSet,
-                        batchesStartedAfterClose = lt,
-                        submittedAfterClose = after.indices.map(before.size + _).toSet
-                      )
-                  }
+        (bs, sub, canc, pk, lt) =>
+          Trace(
+            batches = bs,
+            outcomes = finished.collect { case (id, Some(exit)) => id -> exit }.toMap,
+            submittedAt = sub,
+            cancelledAt = canc,
+            peakInFlight = pk,
+            hung = finished.collect { case (id, None) => id }.toSet,
+            batchesStartedAfterClose = lt,
+            submittedAfterClose = after.indices.map(before.size + _).toSet
+          )
+      }
     yield trace
 
   /**
@@ -178,7 +177,9 @@ object Simulation:
    */
   private def settleBounded(callers: Ref[Map[Int, Caller]]): UIO[Unit] =
     val allDone = callers.get.flatMap(cs => ZIO.forall(cs.values)(_.poll.map(_.isDefined)))
-    (TestClock.adjust(10.seconds) *> allDone).repeat(Schedule.recurUntil[Boolean](identity) && Schedule.recurs(360)).unit
+    (TestClock.adjust(10.seconds) *> allDone)
+      .repeat(Schedule.recurUntil[Boolean](identity) && Schedule.recurs(360))
+      .unit
 
   def isRejected(exit: Exit[BulkDikeError[?], ?]): Boolean =
     exit.causeOption.flatMap(_.failureOption).contains(BulkDikeError.Rejected)

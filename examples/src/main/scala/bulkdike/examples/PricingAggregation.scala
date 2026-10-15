@@ -28,23 +28,25 @@ object PricingAggregation extends ZIOAppDefault:
   val run =
     ZIO.scoped {
       for
-        calls   <- Ref.make(0)
-        api      = PricingApi(calls)
+        calls <- Ref.make(0)
+        api = PricingApi(calls)
         timeout <- Timeout.make(1.second)
         retry   <- Retry.make(min = 10.millis, max = 100.millis, maxRetries = Some(2))
         breaker <- CircuitBreaker.withMaxFailures[Any](maxFailures = 5)
         config  <- ZIO.fromEither(
-                     BulkDikeConfig.make(maxBatchSize = 5, maxBatchDelay = 20.millis, maxInFlightBatches = 2, maxQueueing = 50)
-                   )
+          BulkDikeConfig.make(maxBatchSize = 5, maxBatchDelay = 20.millis, maxInFlightBatches = 2, maxQueueing = 50)
+        )
         // Policies wrap the batch call, so a retry or a timeout covers every caller in the batch at once.
-        prices  <- BulkDike.keyed(config)((countries: NonEmptyChunk[String]) => breaker(retry(timeout(api.fetch(countries)))))
-        wanted   = List("NL", "CN", "US", "NL", "DE", "CN", "US", "NL", "CN", "FR", "US", "NL")
+        prices <- BulkDike.keyed(config)((countries: NonEmptyChunk[String]) =>
+          breaker(retry(timeout(api.fetch(countries))))
+        )
+        wanted = List("NL", "CN", "US", "NL", "DE", "CN", "US", "NL", "CN", "FR", "US", "NL")
         answers <- ZIO.foreachPar(wanted)(country => prices(country).either.map(country -> _))
         _       <- ZIO.foreachDiscard(answers) { (country, answer) =>
-                     Console.printLine(s"$country: ${answer.fold(describe, _.fold("no price")(_.toString))}")
-                   }
-        made    <- calls.get
-        _       <- Console.printLine(s"${wanted.size} requests were served with $made upstream calls (retries included)")
+          Console.printLine(s"$country: ${answer.fold(describe, _.fold("no price")(_.toString))}")
+        }
+        made <- calls.get
+        _    <- Console.printLine(s"${wanted.size} requests were served with $made upstream calls (retries included)")
       yield ()
     }
 

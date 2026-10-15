@@ -54,7 +54,7 @@ object BulkDike:
       accepting <- Ref.Synchronized.make(true)
       inFlight  <- Ref.make(0)
       forming   <- Semaphore.make(1)
-      dike       = Live(config, call, extract, queue, doorbell, accepting, inFlight, forming)
+      dike = Live(config, call, extract, queue, doorbell, accepting, inFlight, forming)
       // Finalizers run in reverse order: workers are interrupted first, then whatever is still queued is released.
       _ <- ZIO.addFinalizer(dike.close)
       _ <- ZIO.foreachDiscard(1 to config.maxInFlightBatches)(_ => dike.worker.forkScoped)
@@ -73,12 +73,12 @@ object BulkDike:
   private def distinct[I](inputs: NonEmptyChunk[I]): NonEmptyChunk[I] =
     NonEmptyChunk.fromIterable(inputs.head, inputs.tail.distinct.filterNot(_ == inputs.head))
 
-  private final case class Entry[I, E, A](input: I, result: Promise[BulkDikeError[E], A], submittedAt: Long)
+  final private case class Entry[I, E, A](input: I, result: Promise[BulkDikeError[E], A], submittedAt: Long)
 
   private enum Admission:
     case Admitted, QueueFull, Closed
 
-  private final class Live[R, E, I, B, A](
+  final private class Live[R, E, I, B, A](
     config: BulkDikeConfig,
     call: NonEmptyChunk[I] => ZIO[R, E, B],
     extract: (I, B) => A,

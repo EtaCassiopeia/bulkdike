@@ -30,51 +30,51 @@ object BulkDikeStressSpec extends ZIOSpecDefault:
           active  <- Ref.make(0)
           peak    <- Ref.make(0)
           exits   <- ZIO.scoped {
-                       for
-                         dike   <- BulkDike.make(cfg) { (ids: NonEmptyChunk[Int]) =>
-                                     val track = active.updateAndGet(_ + 1).flatMap(n => peak.update(_ max n))
-                                     ZIO.acquireReleaseWith(track)(_ => active.update(_ - 1)) { _ =>
-                                       batches.update(_ :+ ids) *>
-                                         Random.nextIntBounded(2).flatMap(ms => ZIO.sleep(ms.millis)) *>
-                                         ZIO.fail(s"batch ${ids.head}").when(failing(ids)).as(ids.map(-_).toList)
-                                     }
-                                   }((id, _) => -id)
-                         calls  <- ZIO.foreach(0 until 1500)(id => dike(id).fork)
-                         _      <- ZIO.foreachDiscard(calls.zipWithIndex.collect { case (f, i) if i % 5 == 0 => f })(
-                                     _.interrupt.fork
-                                   )
-                         result <- ZIO.foreach(calls)(_.await).timeout(hangLimit)
-                       yield result
-                     }
+            for
+              dike <- BulkDike.make(cfg) { (ids: NonEmptyChunk[Int]) =>
+                val track = active.updateAndGet(_ + 1).flatMap(n => peak.update(_ max n))
+                ZIO.acquireReleaseWith(track)(_ => active.update(_ - 1)) { _ =>
+                  batches.update(_ :+ ids) *>
+                    Random.nextIntBounded(2).flatMap(ms => ZIO.sleep(ms.millis)) *>
+                    ZIO.fail(s"batch ${ids.head}").when(failing(ids)).as(ids.map(-_).toList)
+                }
+              }((id, _) => -id)
+              calls <- ZIO.foreach(0 until 1500)(id => dike(id).fork)
+              _     <- ZIO.foreachDiscard(calls.zipWithIndex.collect { case (f, i) if i % 5 == 0 => f })(
+                _.interrupt.fork
+              )
+              result <- ZIO.foreach(calls)(_.await).timeout(hangLimit)
+            yield result
+          }
           sent    <- batches.get
           maxSeen <- peak.get
         yield
           val batchOf   = sent.flatMap(b => b.map(_ -> b)).toMap
           val sentTwice = sent.flatMap(_.toChunk).size - batchOf.size
           val wrong     = exits.toList.flatMap(_.zipWithIndex).collect {
-            case (Exit.Success(v), id) if v != -id || batchOf.get(id).forall(failing)          => id
-            case (exit, id) if Simulation.isRejected(exit) && batchOf.contains(id)              => id
-            case (Exit.Failure(c), id) if c.failureOption.exists(_.isInstanceOf[BulkDikeError.Failed[?]]) &&
-                                          !batchOf.get(id).exists(failing)                     => id
-            case (Exit.Failure(c), id) if c.isInterruptedOnly && id % 5 != 0                    => id
+            case (Exit.Success(v), id) if v != -id || batchOf.get(id).forall(failing) => id
+            case (exit, id) if Simulation.isRejected(exit) && batchOf.contains(id)    => id
+            case (Exit.Failure(c), id)
+                if c.failureOption.exists(_.isInstanceOf[BulkDikeError.Failed[?]]) &&
+                  !batchOf.get(id).exists(failing) =>
+              id
+            case (Exit.Failure(c), id) if c.isInterruptedOnly && id % 5 != 0 => id
           }
           assertTrue(exits.isDefined, sentTwice == 0, maxSeen <= cfg.maxInFlightBatches, wrong.isEmpty)
       }
-    } @@ TestAspect.samples(40),
+    } @@ Effort.samples(40),
     test("closing while callers keep arriving never strands one") {
       for
         cfg   <- ZIO.fromEither(BulkDikeConfig.make(4, 2.millis, 2, 16)).orDie
         calls <- ZIO.scoped {
-                   for
-                     dike  <- BulkDike.make(cfg)((ids: NonEmptyChunk[Int]) => ZIO.sleep(1.milli).as(ids.size))(
-                                (_, n) => n
-                              )
-                     calls <- ZIO.foreach(0 until 200) { id =>
-                                (Random.nextIntBounded(4).flatMap(ms => ZIO.sleep(ms.millis)) *> dike(id)).fork
-                              }
-                     _     <- Random.nextIntBounded(4).flatMap(ms => ZIO.sleep(ms.millis))
-                   yield calls
-                 }
+          for
+            dike  <- BulkDike.make(cfg)((ids: NonEmptyChunk[Int]) => ZIO.sleep(1.milli).as(ids.size))((_, n) => n)
+            calls <- ZIO.foreach(0 until 200) { id =>
+              (Random.nextIntBounded(4).flatMap(ms => ZIO.sleep(ms.millis)) *> dike(id)).fork
+            }
+            _ <- Random.nextIntBounded(4).flatMap(ms => ZIO.sleep(ms.millis))
+          yield calls
+        }
         exits <- ZIO.foreach(calls)(_.await).timeout(hangLimit)
       yield assertTrue(
         exits.isDefined,
@@ -83,5 +83,5 @@ object BulkDikeStressSpec extends ZIOSpecDefault:
           case Exit.Failure(cause) => cause.isInterruptedOnly || cause.failureOption.contains(BulkDikeError.Rejected)
         }
       )
-    } @@ TestAspect.nonFlaky(100)
-  ) @@ TestAspect.withLiveClock @@ TestAspect.withLiveRandom @@ TestAspect.timeout(10.minutes)
+    } @@ Effort.repeats(100)
+  ) @@ TestAspect.withLiveClock @@ TestAspect.withLiveRandom @@ Effort.timeout(10.minutes)

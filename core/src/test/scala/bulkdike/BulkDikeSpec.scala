@@ -15,7 +15,7 @@ object BulkDikeSpec extends ZIOSpecDefault:
     ZIO.fromEither(BulkDikeConfig.make(maxBatchSize, maxBatchDelay, maxInFlightBatches, maxQueueing)).orDie
 
   /** A batch call that records every batch it receives and answers `n -> s"result-$n"`. */
-  private final case class Recorder(batches: Ref[Chunk[Chunk[Int]]]):
+  final private case class Recorder(batches: Ref[Chunk[Chunk[Int]]]):
     def call(inputs: NonEmptyChunk[Int]): UIO[Map[Int, String]] =
       batches.update(_ :+ inputs.toChunk).as(inputs.map(n => n -> s"result-$n").toMap)
 
@@ -55,25 +55,41 @@ object BulkDikeSpec extends ZIOSpecDefault:
       },
       test("dispatches a partial batch exactly maxBatchDelay after its oldest input") {
         for
-          rec      <- recorder
-          cfg      <- config(maxBatchSize = 5, maxBatchDelay = 5.seconds)
-          dike     <- recordingDike(cfg, rec)
-          _        <- TestClock.adjust(4.seconds) // idle time must not count towards the deadline
-          first    <- dike(1).fork
-          _        <- batchWaiting
-          _        <- TestClock.adjust(3.seconds)
-          second   <- dike(2).fork
-          _        <- suspended(second)
-          _        <- TestClock.adjust(1.second)
-          early    <- first.poll
-          _        <- TestClock.adjust(1.second)
-          results  <- first.join.zip(second.join)
-          batches  <- rec.batches.get
+          rec     <- recorder
+          cfg     <- config(maxBatchSize = 5, maxBatchDelay = 5.seconds)
+          dike    <- recordingDike(cfg, rec)
+          _       <- TestClock.adjust(4.seconds) // idle time must not count towards the deadline
+          first   <- dike(1).fork
+          _       <- batchWaiting
+          _       <- TestClock.adjust(3.seconds)
+          second  <- dike(2).fork
+          _       <- suspended(second)
+          _       <- TestClock.adjust(1.second)
+          early   <- first.poll
+          _       <- TestClock.adjust(1.second)
+          results <- first.join.zip(second.join)
+          batches <- rec.batches.get
         yield assertTrue(
           early.isEmpty,
           results == ("result-1", "result-2"),
           batches == Chunk(Chunk(1, 2))
         )
+      },
+      test("dispatches an overdue input as soon as a batch slot frees up, without restarting its delay") {
+        for
+          gate    <- Promise.make[Nothing, Unit]
+          cfg     <- config(maxBatchSize = 2, maxBatchDelay = 5.seconds, maxInFlightBatches = 1)
+          dike    <- BulkDike.make(cfg)((ids: NonEmptyChunk[Int]) => gate.await.when(ids.contains(1)))((n, _) => n)
+          busy    <- ZIO.foreach(List(1, 2))(dike(_).fork) // a full batch occupies the only slot
+          _       <- metricsReach(dike)(_.inFlightBatches == 1)
+          overdue <- dike(3).fork
+          _       <- metricsReach(dike)(_.queued == 1)
+          _       <- TestClock.adjust(10.seconds)          // 3 has now waited twice its delay
+          _       <- gate.succeed(())
+          _       <- ZIO.foreach(busy)(_.join)
+          _       <- TestClock.adjust(Duration.Zero)       // let the freed worker run, without moving time
+          result  <- overdue.poll
+        yield assertTrue(result.exists(_ == Exit.succeed(3)))
       },
       test("passes duplicates to make, and each caller gets its own result") {
         for
@@ -86,11 +102,11 @@ object BulkDikeSpec extends ZIOSpecDefault:
       },
       test("keyed passes each distinct input once and answers None for missing keys") {
         for
-          seen    <- Ref.make(Chunk.empty[Chunk[Int]])
-          cfg     <- config(maxBatchSize = 4)
-          dike    <- BulkDike.keyed(cfg) { (inputs: NonEmptyChunk[Int]) =>
-                       seen.update(_ :+ inputs.toChunk).as(inputs.filter(_ != 3).map(n => n -> n * 10).toMap)
-                     }
+          seen <- Ref.make(Chunk.empty[Chunk[Int]])
+          cfg  <- config(maxBatchSize = 4)
+          dike <- BulkDike.keyed(cfg) { (inputs: NonEmptyChunk[Int]) =>
+            seen.update(_ :+ inputs.toChunk).as(inputs.filter(_ != 3).map(n => n -> n * 10).toMap)
+          }
           results <- ZIO.foreachPar(List(1, 1, 2, 3))(dike(_))
           batches <- seen.get
         yield assertTrue(
@@ -121,10 +137,10 @@ object BulkDikeSpec extends ZIOSpecDefault:
           peak    <- Ref.make(0)
           cfg     <- config(maxBatchSize = 1, maxBatchDelay = Duration.Zero, maxInFlightBatches = 2)
           dike    <- BulkDike.make(cfg) { (_: NonEmptyChunk[Int]) =>
-                       ZIO.acquireReleaseWith(current.updateAndGet(_ + 1).flatMap(n => peak.update(_ max n)))(_ =>
-                         current.update(_ - 1)
-                       )(_ => gate.await)
-                     }((n, _) => n)
+            ZIO.acquireReleaseWith(current.updateAndGet(_ + 1).flatMap(n => peak.update(_ max n)))(_ =>
+              current.update(_ - 1)
+            )(_ => gate.await)
+          }((n, _) => n)
           calls   <- ZIO.foreach(1 to 6)(dike(_).fork)
           _       <- metricsReach(dike)(m => m.inFlightBatches == 2 && m.queued == 4)
           _       <- gate.succeed(())
@@ -139,10 +155,10 @@ object BulkDikeSpec extends ZIOSpecDefault:
           attempt <- Ref.make(0)
           cfg     <- config(maxBatchSize = 2)
           dike    <- BulkDike.make(cfg) { (_: NonEmptyChunk[Int]) =>
-                       attempt.getAndUpdate(_ + 1).flatMap(n => ZIO.fail("upstream down").when(n == 0))
-                     }((n, _) => n)
-          failed  <- ZIO.foreachPar(List(1, 2))(dike(_).exit)
-          later   <- ZIO.foreachPar(List(3, 4))(dike(_))
+            attempt.getAndUpdate(_ + 1).flatMap(n => ZIO.fail("upstream down").when(n == 0))
+          }((n, _) => n)
+          failed <- ZIO.foreachPar(List(1, 2))(dike(_).exit)
+          later  <- ZIO.foreachPar(List(3, 4))(dike(_))
         yield assert(failed)(forall(fails(equalTo(BulkDikeError.Failed("upstream down"))))) &&
           assertTrue(later == List(3, 4))
       },
@@ -182,16 +198,14 @@ object BulkDikeSpec extends ZIOSpecDefault:
           started <- Promise.make[Nothing, Unit]
           cfg     <- config(maxBatchSize = 1, maxBatchDelay = Duration.Zero, maxInFlightBatches = 1)
           callers <- ZIO.scoped {
-                       for
-                         dike     <- BulkDike.make(cfg)((_: NonEmptyChunk[Int]) => started.succeed(()) *> gate.await)(
-                                       (n, _) => n
-                                     )
-                         running  <- dike(1).fork
-                         _        <- started.await
-                         queued   <- dike(2).fork
-                         _        <- metricsReach(dike)(_.queued == 1)
-                       yield (running, queued)
-                     }
+            for
+              dike    <- BulkDike.make(cfg)((_: NonEmptyChunk[Int]) => started.succeed(()) *> gate.await)((n, _) => n)
+              running <- dike(1).fork
+              _       <- started.await
+              queued  <- dike(2).fork
+              _       <- metricsReach(dike)(_.queued == 1)
+            yield (running, queued)
+          }
           running <- callers._1.await
           queued  <- callers._2.await
         yield assertTrue(running.isInterrupted, queued.isInterrupted)
@@ -212,10 +226,24 @@ object BulkDikeSpec extends ZIOSpecDefault:
         val result = BulkDikeConfig.make(0, (-1).second, 0, -1)
         assert(result.left.map(_.problems.size))(isLeft(equalTo(4)))
       },
+      test("names each broken setting and the value it was given") {
+        val problems = BulkDikeConfig.make(0, (-1).second, 0, 0).left.toOption.toList.flatMap(_.problems)
+        assertTrue(
+          problems.exists(p => p.contains("maxBatchSize") && p.contains("got 0")),
+          problems.exists(p => p.contains("maxBatchDelay") && p.contains("negative")),
+          problems.exists(p => p.contains("maxInFlightBatches") && p.contains("got 0"))
+        )
+      },
+      test("explains errors when turned into exceptions") {
+        assertTrue(
+          BulkDikeError.Rejected.toException.getMessage.contains("queue is full"),
+          BulkDikeError.Failed("upstream down").toException.getMessage.contains("upstream down")
+        )
+      },
       test("requires the queue to hold at least one full batch") {
         assert(BulkDikeConfig.make(5, 1.second, 1, 4).left.map(_.problems.head))(
           isLeft(containsString("maxQueueing (4) must be at least maxBatchSize (5)"))
         )
       }
     )
-  ) @@ TestAspect.timeout(30.seconds)
+  ) @@ Effort.timeout(30.seconds)

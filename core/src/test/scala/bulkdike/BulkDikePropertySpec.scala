@@ -19,19 +19,19 @@ object BulkDikePropertySpec extends ZIOSpecDefault:
       test("never strands a caller when its scope closes mid-flight") {
         honoursContract(Simulation.scenario(cancellations = true, close = true))
       }
-    ) @@ TestAspect.samples(150),
+    ) @@ Effort.samples(150),
     test("keyed sends each distinct input once and answers every caller from the map") {
       check(Gen.chunkOfBounded(1, 20)(Gen.int(0, 6))) { inputs =>
         for
           cfg     <- ZIO.fromEither(BulkDikeConfig.make(inputs.size, 1.hour, 1, inputs.size)).orDie
           sent    <- Ref.make(Chunk.empty[Chunk[Int]])
           results <- ZIO.scoped {
-                       BulkDike
-                         .keyed(cfg) { (batch: NonEmptyChunk[Int]) =>
-                           sent.update(_ :+ batch.toChunk).as(batch.filter(_ % 2 == 0).map(n => n -> n * 10).toMap)
-                         }
-                         .flatMap(dike => ZIO.foreachPar(inputs)(dike(_)))
-                     }
+            BulkDike
+              .keyed(cfg) { (batch: NonEmptyChunk[Int]) =>
+                sent.update(_ :+ batch.toChunk).as(batch.filter(_ % 2 == 0).map(n => n -> n * 10).toMap)
+              }
+              .flatMap(dike => ZIO.foreachPar(inputs)(dike(_)))
+          }
           batches <- sent.get
         yield assertTrue(
           batches.size == 1,
@@ -55,4 +55,4 @@ object BulkDikePropertySpec extends ZIOSpecDefault:
           case Left(invalid) => assertTrue(invalid.problems.size == broken)
       }
     }
-  ) @@ TestAspect.timeout(10.minutes)
+  ) @@ Effort.timeout(10.minutes)

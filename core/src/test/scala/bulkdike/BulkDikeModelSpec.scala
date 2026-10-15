@@ -46,28 +46,28 @@ object BulkDikeModelSpec extends ZIOSpecDefault:
       maxBatchSize       <- Gen.int(1, 5)
       maxBatchDelayMs    <- Gen.elements(0, 1, 100, 1000)
       maxInFlightBatches <- Gen.int(1, 3)
-      advance             = Gen.oneOf(Gen.int(0, 1500), Gen.elements(maxBatchDelayMs, (maxBatchDelayMs - 1).max(0)))
-      ops                <- Gen.listOfBounded(0, 40)(
-                              Gen.weighted(Gen.const(Op.Submit) -> 3.0, advance.map(Op.Advance(_)) -> 2.0)
-                            )
+      advance = Gen.oneOf(Gen.int(0, 1500), Gen.elements(maxBatchDelayMs, (maxBatchDelayMs - 1).max(0)))
+      ops <- Gen.listOfBounded(0, 40)(
+        Gen.weighted(Gen.const(Op.Submit) -> 3.0, advance.map(Op.Advance(_)) -> 2.0)
+      )
     yield (maxBatchSize, maxBatchDelayMs, maxInFlightBatches, ops)
 
   private def runReal(maxBatchSize: Int, maxBatchDelayMs: Int, maxInFlightBatches: Int, ops: List[Op]) =
     ZIO.scoped {
       for
-        cfg   <- ZIO
-                   .fromEither(BulkDikeConfig.make(maxBatchSize, maxBatchDelayMs.millis, maxInFlightBatches, 64))
-                   .orDie
+        cfg <- ZIO
+          .fromEither(BulkDikeConfig.make(maxBatchSize, maxBatchDelayMs.millis, maxInFlightBatches, 64))
+          .orDie
         start <- Clock.nanoTime // the TestClock keeps running across samples
         log   <- Ref.make(Vector.empty[(Vector[Int], Long)])
         dike  <- BulkDike.make(cfg) { (ids: NonEmptyChunk[Int]) =>
-                   Clock.nanoTime.flatMap(t => log.update(_ :+ (ids.toVector -> (t - start) / 1_000_000)))
-                 }((id, _) => id)
-        _     <- ZIO.foldLeft(ops)(0) {
-                   case (id, Op.Submit)      => dike(id).fork *> TestClock.adjust(Duration.Zero).as(id + 1)
-                   case (id, Op.Advance(ms)) => TestClock.adjust(ms.millis).as(id)
-                 }
-        out   <- log.get
+          Clock.nanoTime.flatMap(t => log.update(_ :+ (ids.toVector -> (t - start) / 1_000_000)))
+        }((id, _) => id)
+        _ <- ZIO.foldLeft(ops)(0) {
+          case (id, Op.Submit)      => dike(id).fork *> TestClock.adjust(Duration.Zero).as(id + 1)
+          case (id, Op.Advance(ms)) => TestClock.adjust(ms.millis).as(id)
+        }
+        out <- log.get
       yield out
     }
 
@@ -77,5 +77,5 @@ object BulkDikeModelSpec extends ZIOSpecDefault:
         val expected = ops.foldLeft(Model(maxBatchSize, maxBatchDelayMs.toLong))(_.step(_)).dispatched
         runReal(maxBatchSize, maxBatchDelayMs, maxInFlightBatches, ops).map(actual => assertTrue(actual == expected))
       }
-    } @@ TestAspect.samples(200)
-  ) @@ TestAspect.timeout(10.minutes)
+    } @@ Effort.samples(200)
+  ) @@ Effort.timeout(10.minutes)
