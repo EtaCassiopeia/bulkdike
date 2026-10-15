@@ -1,0 +1,221 @@
+package bulkdike
+
+import zio.*
+import zio.test.*
+import zio.test.Assertion.*
+
+object BulkDikeSpec extends ZIOSpecDefault:
+
+  private def config(
+    maxBatchSize: Int = 5,
+    maxBatchDelay: Duration = 5.seconds,
+    maxInFlightBatches: Int = 1,
+    maxQueueing: Int = 16
+  ): UIO[BulkDikeConfig] =
+    ZIO.fromEither(BulkDikeConfig.make(maxBatchSize, maxBatchDelay, maxInFlightBatches, maxQueueing)).orDie
+
+  /** A batch call that records every batch it receives and answers `n -> s"result-$n"`. */
+  private final case class Recorder(batches: Ref[Chunk[Chunk[Int]]]):
+    def call(inputs: NonEmptyChunk[Int]): UIO[Map[Int, String]] =
+      batches.update(_ :+ inputs.toChunk).as(inputs.map(n => n -> s"result-$n").toMap)
+
+  private val recorder = Ref.make(Chunk.empty[Chunk[Int]]).map(Recorder(_))
+
+  private def recordingDike(cfg: BulkDikeConfig, rec: Recorder) =
+    BulkDike.make(cfg)(rec.call)((n, results) => results(n))
+
+  /** Waits until some fiber is blocked on the TestClock, i.e. a partial batch is waiting for its deadline. */
+  private val batchWaiting: UIO[Unit] =
+    TestClock.sleeps.repeatUntil(_.nonEmpty).unit
+
+  /** Waits until `fiber` is parked, e.g. a caller whose input has been queued and is awaiting its result. */
+  private def suspended(fiber: Fiber.Runtime[?, ?]): UIO[Unit] =
+    fiber.status.repeatUntil {
+      case _: Fiber.Status.Suspended => true
+      case _                         => false
+    }.unit
+
+  private def metricsReach(dike: BulkDike[?, ?, ?])(p: BulkDike.Metrics => Boolean): UIO[Unit] =
+    dike.metrics.repeatUntil(p).unit
+
+  def spec = suite("BulkDike")(
+    suite("batching")(
+      test("dispatches a full batch immediately, without waiting for the delay") {
+        for
+          rec     <- recorder
+          cfg     <- config(maxBatchSize = 5)
+          dike    <- recordingDike(cfg, rec)
+          results <- ZIO.foreachPar(1 to 5)(dike(_))
+          batches <- rec.batches.get
+        yield assertTrue(
+          results == (1 to 5).map(n => s"result-$n"),
+          batches.size == 1,
+          batches.head.sorted == Chunk(1, 2, 3, 4, 5)
+        )
+      },
+      test("dispatches a partial batch exactly maxBatchDelay after its oldest input") {
+        for
+          rec      <- recorder
+          cfg      <- config(maxBatchSize = 5, maxBatchDelay = 5.seconds)
+          dike     <- recordingDike(cfg, rec)
+          _        <- TestClock.adjust(4.seconds) // idle time must not count towards the deadline
+          first    <- dike(1).fork
+          _        <- batchWaiting
+          _        <- TestClock.adjust(3.seconds)
+          second   <- dike(2).fork
+          _        <- suspended(second)
+          _        <- TestClock.adjust(1.second)
+          early    <- first.poll
+          _        <- TestClock.adjust(1.second)
+          results  <- first.join.zip(second.join)
+          batches  <- rec.batches.get
+        yield assertTrue(
+          early.isEmpty,
+          results == ("result-1", "result-2"),
+          batches == Chunk(Chunk(1, 2))
+        )
+      },
+      test("passes duplicates to make, and each caller gets its own result") {
+        for
+          rec     <- recorder
+          cfg     <- config(maxBatchSize = 3)
+          dike    <- recordingDike(cfg, rec)
+          results <- ZIO.foreachPar(List(7, 7, 8))(dike(_))
+          batches <- rec.batches.get
+        yield assertTrue(results == List("result-7", "result-7", "result-8"), batches.head.sorted == Chunk(7, 7, 8))
+      },
+      test("keyed passes each distinct input once and answers None for missing keys") {
+        for
+          seen    <- Ref.make(Chunk.empty[Chunk[Int]])
+          cfg     <- config(maxBatchSize = 4)
+          dike    <- BulkDike.keyed(cfg) { (inputs: NonEmptyChunk[Int]) =>
+                       seen.update(_ :+ inputs.toChunk).as(inputs.filter(_ != 3).map(n => n -> n * 10).toMap)
+                     }
+          results <- ZIO.foreachPar(List(1, 1, 2, 3))(dike(_))
+          batches <- seen.get
+        yield assertTrue(
+          results == List(Some(10), Some(10), Some(20), None),
+          batches.head.sorted == Chunk(1, 2, 3)
+        )
+      }
+    ),
+    suite("load limiting")(
+      test("rejects immediately when maxQueueing inputs are already waiting") {
+        for
+          gate     <- Promise.make[Nothing, Unit]
+          cfg      <- config(maxBatchSize = 1, maxBatchDelay = Duration.Zero, maxInFlightBatches = 1, maxQueueing = 1)
+          dike     <- BulkDike.make(cfg)((_: NonEmptyChunk[Int]) => gate.await)((n, _) => n)
+          running  <- dike(1).fork
+          _        <- metricsReach(dike)(_.inFlightBatches == 1)
+          queued   <- dike(2).fork
+          _        <- metricsReach(dike)(_.queued == 1)
+          rejected <- dike(3).exit
+          _        <- gate.succeed(())
+          done     <- running.join.zip(queued.join)
+        yield assert(rejected)(fails(equalTo(BulkDikeError.Rejected))) && assertTrue(done == (1, 2))
+      },
+      test("never runs more than maxInFlightBatches batch calls at once") {
+        for
+          gate    <- Promise.make[Nothing, Unit]
+          current <- Ref.make(0)
+          peak    <- Ref.make(0)
+          cfg     <- config(maxBatchSize = 1, maxBatchDelay = Duration.Zero, maxInFlightBatches = 2)
+          dike    <- BulkDike.make(cfg) { (_: NonEmptyChunk[Int]) =>
+                       ZIO.acquireReleaseWith(current.updateAndGet(_ + 1).flatMap(n => peak.update(_ max n)))(_ =>
+                         current.update(_ - 1)
+                       )(_ => gate.await)
+                     }((n, _) => n)
+          calls   <- ZIO.foreach(1 to 6)(dike(_).fork)
+          _       <- metricsReach(dike)(m => m.inFlightBatches == 2 && m.queued == 4)
+          _       <- gate.succeed(())
+          results <- ZIO.foreach(calls)(_.join)
+          maxSeen <- peak.get
+        yield assertTrue(maxSeen == 2, results == (1 to 6))
+      }
+    ),
+    suite("failures")(
+      test("fails every caller of a batch whose call fails, and keeps serving later calls") {
+        for
+          attempt <- Ref.make(0)
+          cfg     <- config(maxBatchSize = 2)
+          dike    <- BulkDike.make(cfg) { (_: NonEmptyChunk[Int]) =>
+                       attempt.getAndUpdate(_ + 1).flatMap(n => ZIO.fail("upstream down").when(n == 0))
+                     }((n, _) => n)
+          failed  <- ZIO.foreachPar(List(1, 2))(dike(_).exit)
+          later   <- ZIO.foreachPar(List(3, 4))(dike(_))
+        yield assert(failed)(forall(fails(equalTo(BulkDikeError.Failed("upstream down"))))) &&
+          assertTrue(later == List(3, 4))
+      },
+      test("propagates a defect in the batch call to its callers instead of hanging them") {
+        val boom = new RuntimeException("boom")
+        for
+          cfg   <- config(maxBatchSize = 2)
+          dike  <- BulkDike.make(cfg)((_: NonEmptyChunk[Int]) => ZIO.die(boom))((n, _: Nothing) => n)
+          exits <- ZIO.foreachPar(List(1, 2))(dike(_).exit)
+        yield assertTrue(exits.forall(_.causeOption.flatMap(_.dieOption).contains(boom)))
+      },
+      test("turns an exception thrown by extract into a defect for that caller only") {
+        val boom = new RuntimeException("bad input")
+        for
+          cfg   <- config(maxBatchSize = 2)
+          dike  <- BulkDike.make(cfg)((_: NonEmptyChunk[Int]) => ZIO.unit)((n, _) => if n == 1 then throw boom else n)
+          exits <- ZIO.foreachPar(List(1, 2))(dike(_).exit)
+        yield assertTrue(exits.head.causeOption.flatMap(_.dieOption).contains(boom), exits(1) == Exit.succeed(2))
+      }
+    ),
+    suite("interruption and shutdown")(
+      test("leaves out the input of a caller interrupted before dispatch") {
+        for
+          rec     <- recorder
+          cfg     <- config(maxBatchSize = 2)
+          dike    <- recordingDike(cfg, rec)
+          gone    <- dike(1).fork
+          _       <- batchWaiting // 1 is in the batch being assembled
+          _       <- gone.interrupt
+          result  <- dike(2)      // fills the batch, which is dispatched without 1
+          batches <- rec.batches.get
+        yield assertTrue(result == "result-2", batches == Chunk(Chunk(2)))
+      },
+      test("interrupts callers still waiting when the scope closes") {
+        for
+          gate    <- Promise.make[Nothing, Unit]
+          started <- Promise.make[Nothing, Unit]
+          cfg     <- config(maxBatchSize = 1, maxBatchDelay = Duration.Zero, maxInFlightBatches = 1)
+          callers <- ZIO.scoped {
+                       for
+                         dike     <- BulkDike.make(cfg)((_: NonEmptyChunk[Int]) => started.succeed(()) *> gate.await)(
+                                       (n, _) => n
+                                     )
+                         running  <- dike(1).fork
+                         _        <- started.await
+                         queued   <- dike(2).fork
+                         _        <- metricsReach(dike)(_.queued == 1)
+                       yield (running, queued)
+                     }
+          running <- callers._1.await
+          queued  <- callers._2.await
+        yield assertTrue(running.isInterrupted, queued.isInterrupted)
+      },
+      test("interrupts calls made after the scope has closed") {
+        for
+          cfg  <- config()
+          dike <- ZIO.scoped(BulkDike.make(cfg)((_: NonEmptyChunk[Int]) => ZIO.unit)((n, _) => n))
+          exit <- dike(1).exit
+        yield assertTrue(exit.isInterrupted)
+      }
+    ),
+    suite("BulkDikeConfig")(
+      test("accepts a sensible configuration") {
+        assertTrue(BulkDikeConfig.make(5, 5.seconds, 2, 10).isRight)
+      },
+      test("reports every problem at once") {
+        val result = BulkDikeConfig.make(0, (-1).second, 0, -1)
+        assert(result.left.map(_.problems.size))(isLeft(equalTo(4)))
+      },
+      test("requires the queue to hold at least one full batch") {
+        assert(BulkDikeConfig.make(5, 1.second, 1, 4).left.map(_.problems.head))(
+          isLeft(containsString("maxQueueing (4) must be at least maxBatchSize (5)"))
+        )
+      }
+    )
+  ) @@ TestAspect.timeout(30.seconds)
