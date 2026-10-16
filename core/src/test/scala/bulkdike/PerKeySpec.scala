@@ -12,11 +12,20 @@ object PerKeySpec extends ZIOSpecDefault:
     maxQueueing: Int = 16,
     maxBatchDelay: Duration = Duration.Zero,
     maxBatchWeight: Long = Long.MaxValue,
-    maxQueuedWeight: Long = Long.MaxValue
+    maxQueuedWeight: Long = Long.MaxValue,
+    directIdleKeys: Boolean = true
   ): UIO[PerKeyConfig] =
     ZIO
       .fromEither(
-        PerKeyConfig.make(maxBatchSize, maxInFlightBatches, maxQueueing, maxBatchDelay, maxBatchWeight, maxQueuedWeight)
+        PerKeyConfig.make(
+          maxBatchSize,
+          maxInFlightBatches,
+          maxQueueing,
+          maxBatchDelay,
+          maxBatchWeight,
+          maxQueuedWeight,
+          directIdleKeys
+        )
       )
       .orDie
 
@@ -140,6 +149,32 @@ object PerKeySpec extends ZIOSpecDefault:
           sent    <- calls.get
         yield assertTrue(cold == 5, sent == Chunk(Chunk(1), Chunk(2, 3), Chunk(5), Chunk(4)))
       },
+      test("leaves an idle key's input to a worker when direct calls are off") {
+        for
+          down  <- downstream
+          cfg   <- config(maxInFlightBatches = 1, directIdleKeys = false)
+          d     <- dike(cfg, down, held = Set("a"))
+          a     <- d("a" -> 1).fork
+          _     <- metricsReach(d)(_.inFlightBatches == 1)
+          b     <- d("b" -> 2).fork
+          _     <- metricsReach(d)(_.queued == 1) // the only worker is busy with "a", so "b" waits for it
+          waits <- d.metrics
+          _     <- down.gate.succeed(())
+          _     <- a.join *> b.join
+        yield assertTrue(waits == BulkDike.Metrics(queued = 1, inFlightBatches = 1))
+      },
+      test("sends each key's waiting inputs in `order`, ties in submission order") {
+        for
+          down <- downstream
+          cfg  <- config(maxBatchSize = 10, maxBatchDelay = 1.second)
+          byRest = Order.by((input: (String, Int)) => (input._2 % 3).toLong)
+          d       <- BulkDike.perKey(cfg, (_: (String, Int))._1, order = byRest)(down.call(Set.empty))((i, _) => i._2)
+          callers <- submitInOrder(d, "k" -> 1, "k" -> 2, "k" -> 3, "k" -> 4, "k" -> 5)
+          _       <- TestClock.adjust(1.second)
+          _       <- ZIO.foreach(callers)(_.join)
+          sent    <- down.batches.get
+        yield assertTrue(sent == Chunk("k" -> Chunk(3, 1, 4, 2, 5)))
+      },
       test("interrupts a direct call when its caller is interrupted, and frees the key") {
         for
           calls <- Ref.make(Chunk.empty[Int])
@@ -248,7 +283,8 @@ object PerKeySpec extends ZIOSpecDefault:
         yield assertTrue(
           cfg.maxBatchDelay == Duration.Zero,
           cfg.maxBatchWeight == Long.MaxValue,
-          cfg.maxQueuedWeight == Long.MaxValue
+          cfg.maxQueuedWeight == Long.MaxValue,
+          cfg.directIdleKeys
         )
       },
       test("accepts a configuration exactly when every constraint holds") {

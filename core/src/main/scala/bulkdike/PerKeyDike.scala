@@ -11,7 +11,7 @@ private[bulkdike] object PerKeyDike:
   private enum Admission:
     case Direct, Admitted, Full, Closed
 
-  def make[R, E, K, I, B, A](config: PerKeyConfig, key: I => K, weigh: I => Long)(
+  def make[R, E, K, I, B, A](config: PerKeyConfig, key: I => K, weigh: I => Long, order: Order[I])(
     call: (K, NonEmptyChunk[I]) => ZIO[R, E, B]
   )(extract: (I, B) => A): URIO[R & Scope, BulkDike[I, E, A]] =
     val limits = Lanes.Limits(
@@ -19,14 +19,24 @@ private[bulkdike] object PerKeyDike:
       maxBatchWeight = config.maxBatchWeight,
       maxBatchDelayNanos = config.maxBatchDelay.toNanos,
       maxQueueing = config.maxQueueing,
-      maxQueuedWeight = config.maxQueuedWeight
+      maxQueuedWeight = config.maxQueuedWeight,
+      directIdleKeys = config.directIdleKeys
     )
     for
       lanes <- TRef.make(Lanes.empty[K, Entry[I, E, A]](limits)).commit
       open  <- TRef.make(true).commit
       env   <- ZIO.environment[R]
       scope <- ZIO.scope
-      dike = Live(key, weigh, (k, inputs) => call(k, inputs).provideEnvironment(env), extract, lanes, open, scope)
+      dike = Live(
+        key,
+        weigh,
+        order,
+        (k, inputs) => call(k, inputs).provideEnvironment(env),
+        extract,
+        lanes,
+        open,
+        scope
+      )
       // Finalizers run in reverse order: workers are interrupted first, then whatever is still waiting is released.
       _ <- ZIO.addFinalizer(dike.close)
       _ <- ZIO.foreachDiscard(1 to config.maxInFlightBatches)(_ => dike.worker.forkScoped)
@@ -39,6 +49,7 @@ private[bulkdike] object PerKeyDike:
   final private class Live[E, K, I, B, A](
     key: I => K,
     weigh: I => Long,
+    order: Order[I],
     call: (K, NonEmptyChunk[I]) => IO[E, B],
     extract: (I, B) => A,
     lanes: TRef[Lanes[K, Entry[I, E, A]]],
@@ -49,10 +60,13 @@ private[bulkdike] object PerKeyDike:
     override def apply(input: I): IO[BulkDikeError[E], A] =
       ZIO.uninterruptibleMask { restore =>
         for
+          // The application's functions run once, here, and never inside a transaction, which may retry.
           k           <- ZIO.succeed(key(input))
+          rank        <- ZIO.succeed(order.rank(input))
+          weight      <- ZIO.succeed(weigh(input) max 0L)
           result      <- Promise.make[BulkDikeError[E], A]
           submittedAt <- Clock.nanoTime
-          item = Lanes.Item(Entry(input, result), weigh(input) max 0L, submittedAt)
+          item = Lanes.Item(Entry(input, result), weight, submittedAt, rank)
           a <- admit(k, item).flatMap {
             case Admission.Direct   => direct(k, input, restore)
             case Admission.Admitted => restore(result.await).onInterrupt(result.interrupt)

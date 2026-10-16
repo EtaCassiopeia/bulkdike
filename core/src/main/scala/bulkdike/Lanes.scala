@@ -8,7 +8,8 @@ import zio.{Chunk, NonEmptyChunk}
  * The waiting room behind [[BulkDike.perKey]]: one lane per key, as a pure value so that every transition can be tested
  * on its own and checked against the TLA+ model in `formal/PerKey.tla`.
  *
- * A key has a lane while it has items waiting or a call in flight. A lane is in exactly one state:
+ * A key has a lane while it has items waiting or a call in flight. A lane keeps its items in ascending rank, ties in
+ * arrival order, and is in exactly one state:
  *   - `Waiting(deadline)`: holds a partial batch whose oldest item is not yet due;
  *   - `Ready`: in line to be taken, because it is full or due;
  *   - `Busy`: its batch, or an input claimed by its caller, is in flight. Items for it keep accumulating, but it is
@@ -29,12 +30,13 @@ final private[bulkdike] case class Lanes[K, X](
   import Lanes.*
 
   /**
-   * Marks `key` busy for an input its caller sends on its own, without a worker; `None` unless the key is idle (no
-   * lane) and batches are not delayed. Inputs for the key that arrive meanwhile wait in its lane, as behind any batch.
+   * Marks `key` busy for an input its caller sends on its own, without a worker; `None` unless direct calls are on, the
+   * key is idle (no lane) and batches are not delayed. Inputs for the key that arrive meanwhile wait in its lane, as
+   * behind any batch.
    */
   def claim(key: K): Option[Lanes[K, X]] =
-    Option.when(limits.maxBatchDelayNanos == 0 && !lanes.contains(key))(
-      copy(lanes = lanes.updated(key, Lane(Queue.empty[Item[X]], 0L, Status.Busy)), busy = busy + 1)
+    Option.when(limits.directIdleKeys && limits.maxBatchDelayNanos == 0 && !lanes.contains(key))(
+      copy(lanes = lanes.updated(key, Lane(Vector.empty[Item[X]], 0L, Status.Busy)), busy = busy + 1)
     )
 
   /** Adds `item` to the lane of `key`, or returns `None` if that would exceed the count or weight bound. */
@@ -43,9 +45,9 @@ final private[bulkdike] case class Lanes[K, X](
     else
       val counted = copy(queued = queued + 1, weight = weight + item.weight)
       Some(lanes.get(key) match
-        case None       => counted.schedule(key, Lane(Queue(item), item.weight, Status.Busy))
+        case None       => counted.schedule(key, Lane(Vector(item), item.weight, Status.Busy))
         case Some(lane) =>
-          val grown = lane.copy(items = lane.items.enqueue(item), weight = lane.weight + item.weight)
+          val grown = lane.copy(items = lane.inserted(item), weight = lane.weight + item.weight)
           grown.status match
             case Status.Waiting(deadline) if grown.isFull(limits) => counted.unwait(key, deadline).schedule(key, grown)
             case _                                                => counted.copy(lanes = lanes.updated(key, grown)))
@@ -60,7 +62,7 @@ final private[bulkdike] case class Lanes[K, X](
       case None              => Left(promoted.waiting.headOption.map(_._1))
       case Some((key, rest)) =>
         val lane                       = promoted.lanes(key)
-        val (batch, remaining, weight) = lane.oldestBatch(limits)
+        val (batch, remaining, weight) = lane.firstBatch(limits)
         Right(
           (
             key,
@@ -87,7 +89,7 @@ final private[bulkdike] case class Lanes[K, X](
   def drain: (Chunk[X], Lanes[K, X]) =
     val items    = Chunk.fromIterable(lanes.values.flatMap(_.items.map(_.value)))
     val inFlight = lanes.collect {
-      case (key, lane) if lane.status == Status.Busy => key -> Lane(Queue.empty[Item[X]], 0L, lane.status)
+      case (key, lane) if lane.status == Status.Busy => key -> Lane(Vector.empty[Item[X]], 0L, lane.status)
     }
     (
       items,
@@ -98,7 +100,7 @@ final private[bulkdike] case class Lanes[K, X](
   private def schedule(key: K, lane: Lane[X]): Lanes[K, X] =
     if lane.isFull(limits) then copy(lanes = lanes.updated(key, lane.copy(status = Status.Ready)), ready = ready :+ key)
     else
-      val deadline = saturatingAdd(lane.items.head.submittedAt, limits.maxBatchDelayNanos)
+      val deadline = saturatingAdd(lane.items.iterator.map(_.submittedAt).min, limits.maxBatchDelayNanos)
       copy(
         lanes = lanes.updated(key, lane.copy(status = Status.Waiting(deadline))),
         waiting = waiting.updated(deadline, waiting.getOrElse(deadline, Vector.empty) :+ key)
@@ -125,36 +127,40 @@ object Lanes:
     maxBatchWeight: Long,
     maxBatchDelayNanos: Long,
     maxQueueing: Int,
-    maxQueuedWeight: Long
+    maxQueuedWeight: Long,
+    directIdleKeys: Boolean
   )
 
-  final case class Item[X](value: X, weight: Long, submittedAt: Long)
+  final case class Item[X](value: X, weight: Long, submittedAt: Long, rank: Long = 0L)
 
   enum Status:
     case Waiting(deadline: Long)
     case Ready
     case Busy
 
-  final case class Lane[X](items: Queue[Item[X]], weight: Long, status: Status):
+  final case class Lane[X](items: Vector[Item[X]], weight: Long, status: Status):
 
     def isFull(limits: Limits): Boolean =
       items.size >= limits.maxBatchSize || weight >= limits.maxBatchWeight
 
-    /** The oldest items that fit in one batch: always at least one, even if it alone exceeds the weight limit. */
-    def oldestBatch(limits: Limits): (NonEmptyChunk[Item[X]], Queue[Item[X]], Long) =
-      val (first, rest) = items.dequeue
+    /**
+     * `items` with `item` after every item of a rank up to its own. Inputs mostly arrive in rank order: search from the
+     * end.
+     */
+    def inserted(item: Item[X]): Vector[Item[X]] =
+      val at = items.lastIndexWhere(_.rank <= item.rank) + 1
+      if at == items.size then items :+ item else items.patch(at, Vector(item), 0)
+
+    /** The first items that fit in one batch: always at least one, even if it alone exceeds the weight limit. */
+    def firstBatch(limits: Limits): (NonEmptyChunk[Item[X]], Vector[Item[X]], Long) =
       @annotation.tailrec
-      def loop(
-        batch: NonEmptyChunk[Item[X]],
-        rest: Queue[Item[X]],
-        weight: Long
-      ): (NonEmptyChunk[Item[X]], Queue[Item[X]], Long) =
-        rest.dequeueOption match
-          case Some((item, more))
-              if batch.size < limits.maxBatchSize && item.weight <= limits.maxBatchWeight - weight =>
-            loop(batch :+ item, more, weight + item.weight)
-          case _ => (batch, rest, weight)
-      loop(NonEmptyChunk.single(first), rest, first.weight)
+      def loop(size: Int, weight: Long): (Int, Long) =
+        if size < items.size && size < limits.maxBatchSize && items(size).weight <= limits.maxBatchWeight - weight then
+          loop(size + 1, weight + items(size).weight)
+        else (size, weight)
+      val (size, weight) = loop(1, items.head.weight)
+      val (batch, rest)  = items.splitAt(size)
+      (NonEmptyChunk.fromIterable(batch.head, batch.tail), rest, weight)
 
   def empty[K, X](limits: Limits): Lanes[K, X] =
     Lanes(limits, Map.empty, Queue.empty, TreeMap.empty[Long, Vector[K]], 0, 0L, 0)

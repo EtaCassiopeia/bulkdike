@@ -15,7 +15,7 @@ object LanesSpec extends ZIOSpecDefault:
 
   enum Op:
     case Claim(key: Int)
-    case Admit(key: Int, weight: Long, elapse: Long)
+    case Admit(key: Int, weight: Long, rank: Long, elapse: Long)
     case Next(elapse: Long)
     case Release(pick: Int)
     case Drain
@@ -27,17 +27,21 @@ object LanesSpec extends ZIOSpecDefault:
       delay       <- Gen.long(0, 3)
       queueing    <- Gen.int(size, 10)
       queued      <- Gen.long(batchWeight, 20)
-    yield Limits(size, batchWeight, delay, queueing, queued)
+      direct      <- Gen.boolean
+    yield Limits(size, batchWeight, delay, queueing, queued, direct)
 
   private val op: Gen[Any, Op] = Gen.oneOf(
     Gen.int(0, 3).map(Op.Claim(_)),
-    (Gen.int(0, 3) <*> Gen.long(0, 5) <*> Gen.long(0, 1)).map(Op.Admit(_, _, _)),
+    (Gen.int(0, 3) <*> Gen.long(0, 5) <*> Gen.long(0, 2) <*> Gen.long(0, 1)).map(Op.Admit(_, _, _, _)),
     Gen.long(0, 2).map(Op.Next(_)),
     Gen.int(0, 3).map(Op.Release(_)),
     Gen.const(Op.Drain)
   )
 
-  /** What a correct implementation must be equivalent to, plus the clock. */
+  /**
+   * What a correct implementation must be equivalent to, plus the clock. A key's items are kept in arrival order; the
+   * order they must be sent in is computed from it, by a stable sort.
+   */
   final private case class Model(
     now: Long = 0,
     serial: Int = 0,
@@ -45,6 +49,12 @@ object LanesSpec extends ZIOSpecDefault:
     busy: Set[Int] = Set.empty
   ):
     def items: Iterable[Item[Int]] = waiting.values.flatten
+
+  /** A key's items in the order they must be sent: ascending rank, ties in arrival order. */
+  private def inOrder(items: Queue[Item[Int]]): List[Item[Int]] = items.toList.sortBy(_.rank)
+
+  /** When a key's partial batch falls due: `maxBatchDelay` after its oldest item arrived, whatever its rank. */
+  private def dueAt(l: Limits, items: Iterable[Item[Int]]): Long = items.map(_.submittedAt).min + l.maxBatchDelayNanos
 
   /** Whether a key's waiting items make a full batch, computed independently of the implementation. */
   private def full(l: Limits, items: Iterable[Item[Int]]): Boolean =
@@ -61,15 +71,15 @@ object LanesSpec extends ZIOSpecDefault:
   private def step(l: Limits, lanes: Lanes[Int, Int], m: Model, op: Op): (Lanes[Int, Int], Model, List[String]) =
     op match
       case Op.Claim(key) =>
-        val idle = l.maxBatchDelayNanos == 0 && !m.waiting.contains(key) && !m.busy(key)
+        val idle = l.directIdleKeys && l.maxBatchDelayNanos == 0 && !m.waiting.contains(key) && !m.busy(key)
         lanes.claim(key) match
           case Some(claimed) =>
             (claimed, m.copy(busy = m.busy + key), Option.unless(idle)(s"$op claimed a key that is not idle").toList)
           case None => (lanes, m, Option.when(idle)(s"$op refused an idle key").toList)
 
-      case Op.Admit(key, weight, elapse) =>
+      case Op.Admit(key, weight, rank, elapse) =>
         val now  = m.now + elapse
-        val item = Item(m.serial, weight, now)
+        val item = Item(m.serial, weight, now, rank)
         val fits = m.items.size < l.maxQueueing && m.items.map(_.weight).sum + weight <= l.maxQueuedWeight
         lanes.admit(key, item) match
           case Some(admitted) =>
@@ -84,28 +94,30 @@ object LanesSpec extends ZIOSpecDefault:
         lanes.next(now) match
           case Right((key, batch, taken)) =>
             val queue          = m.waiting.getOrElse(key, Queue.empty)
-            val (sent, remain) = queue.splitAt(batch.size)
+            val (sent, remain) = inOrder(queue).splitAt(batch.size)
             val sentWeight     = sent.map(_.weight).sum
             val wasFull        = full(l, queue)
             val errors         = List(
               Option.when(m.busy(key))(s"took key $key while its batch was in flight"),
-              Option.when(batch.toList != sent.map(_.value).toList)(s"batch $batch is not the head of $queue"),
+              Option
+                .when(batch.toList != sent.map(_.value).toList)(s"batch $batch is not the head of ${inOrder(queue)}"),
               Option.when(batch.size > l.maxBatchSize)(s"batch $batch exceeds maxBatchSize"),
               Option.when(batch.size > 1 && sentWeight > l.maxBatchWeight)(s"batch $batch exceeds maxBatchWeight"),
               Option.when(
                 remain.nonEmpty && batch.size < l.maxBatchSize && sentWeight + remain.head.weight <= l.maxBatchWeight
               )(s"batch $batch left out ${remain.head} although it fits"),
-              Option.when(!wasFull && queue.head.submittedAt + l.maxBatchDelayNanos > now)(
+              Option.when(!wasFull && dueAt(l, queue) > now)(
                 s"partial batch $batch sent before its deadline"
               )
             ).flatten
-            val waiting = if remain.isEmpty then m.waiting - key else m.waiting.updated(key, remain)
+            val left    = queue.filterNot(sent.contains)
+            val waiting = if left.isEmpty then m.waiting - key else m.waiting.updated(key, left)
             (taken, m.copy(now = now, waiting = waiting, busy = m.busy + key), errors)
           case Left(deadline) =>
             val idle    = m.waiting.filter((key, _) => !m.busy(key))
             val due     = idle.filter((_, q) => full(l, q))
-            val overdue = idle.filter((_, q) => q.head.submittedAt + l.maxBatchDelayNanos <= now)
-            val next    = idle.values.map(_.head.submittedAt + l.maxBatchDelayNanos).minOption
+            val overdue = idle.filter((_, q) => dueAt(l, q) <= now)
+            val next    = idle.values.map(dueAt(l, _)).minOption
             val errors  = List(
               Option.when(due.nonEmpty || overdue.nonEmpty)(s"nothing taken at $now although ${due ++ overdue} is due"),
               Option.when(deadline != next)(s"next deadline $deadline, expected $next")
@@ -129,7 +141,9 @@ object LanesSpec extends ZIOSpecDefault:
     val perLane     = lanes.lanes.toList.flatMap { (key, lane) =>
       List(
         Option
-          .when(lane.items.toList != m.waiting.getOrElse(key, Queue.empty).toList)(s"lane $key holds the wrong items"),
+          .when(lane.items.toList != inOrder(m.waiting.getOrElse(key, Queue.empty)))(
+            s"lane $key holds the wrong items"
+          ),
         Option.when(lane.weight != lane.items.map(_.weight).sum)(s"lane $key has the wrong weight"),
         Option.when(lane.items.isEmpty && lane.status != Status.Busy)(s"empty idle lane $key was kept"),
         lane.status match
@@ -137,7 +151,7 @@ object LanesSpec extends ZIOSpecDefault:
           case Status.Waiting(deadline) =>
             Option.when(
               waitingKeys != waitingKeys.distinct || !waitingKeys.contains(key -> deadline) || full(l, lane.items) ||
-                deadline != lane.items.head.submittedAt + l.maxBatchDelayNanos
+                deadline != dueAt(l, lane.items)
             )(s"waiting lane $key is misfiled")
           case Status.Busy => Option.unless(m.busy(key))(s"lane $key is busy without a batch in flight")
       ).flatten
@@ -153,7 +167,7 @@ object LanesSpec extends ZIOSpecDefault:
     ).flatten
 
   private def limitsOf(size: Int, weight: Long = Long.MaxValue, delay: Long = 0) =
-    Limits(size, weight, delay, maxQueueing = 100, maxQueuedWeight = Long.MaxValue)
+    Limits(size, weight, delay, maxQueueing = 100, maxQueuedWeight = Long.MaxValue, directIdleKeys = true)
 
   private def takeAll(lanes: Lanes[String, Int], now: Long): List[(String, List[Int])] =
     lanes.next(now) match
@@ -174,7 +188,7 @@ object LanesSpec extends ZIOSpecDefault:
       )
     },
     test("never lets an enormous maxBatchDelay overflow into a deadline in the past") {
-      val limits = Limits(10, Long.MaxValue, Long.MaxValue, maxQueueing = 10, maxQueuedWeight = Long.MaxValue)
+      val limits = limitsOf(size = 10, delay = Long.MaxValue)
       val lanes  = Lanes.empty[String, Int](limits).admit("k", Item(1, 1, submittedAt = 5)).get
       assertTrue(lanes.next(now = 10).left.toOption == Some(Some(Long.MaxValue)))
     },
@@ -202,8 +216,23 @@ object LanesSpec extends ZIOSpecDefault:
         more.next(0).isLeft,
         takeAll(more.release("k"), now = 0) == List("k" -> List(1, 2, 3)),
         more.release("k").claim("k").isEmpty, // still has inputs waiting
-        Lanes.empty[String, Int](limitsOf(size = 10, delay = 1)).claim("k").isEmpty
+        Lanes.empty[String, Int](limitsOf(size = 10, delay = 1)).claim("k").isEmpty,
+        Lanes.empty[String, Int](limitsOf(size = 10).copy(directIdleKeys = false)).claim("k").isEmpty
       )
+    },
+    test("sends a key's waiting inputs in rank order, ties in arrival order, and a late low rank in the next batch") {
+      val inFlight = Lanes.empty[String, Int](limitsOf(size = 3)).claim("k").get
+      val waiting  = List(1 -> 20L, 2 -> 10L, 3 -> 20L, 4 -> 10L, 5 -> 30L)
+        .foldLeft(inFlight) { case (l, (n, rank)) => l.admit("k", Item(n, 1, 0, rank)).get }
+      val (_, first, sent) = waiting.release("k").next(0).toOption.get
+      val late             = sent.admit("k", Item(6, 1, 0, rank = 0)).get
+      assertTrue(first.toList == List(2, 4, 1), takeAll(late.release("k"), now = 0) == List("k" -> List(6, 3, 5)))
+    },
+    test("dates a partial batch from its oldest input, not its first in rank order") {
+      val limits = limitsOf(size = 10, delay = 100)
+      val lanes  =
+        Lanes.empty[String, Int](limits).admit("k", Item(1, 1, 0, rank = 9)).get.admit("k", Item(2, 1, 50, 1)).get
+      assertTrue(lanes.next(now = 99).left.toOption == Some(Some(100)), lanes.next(now = 100).isRight)
     },
     test("keeps a key's later inputs back while its batch is in flight, and sends them together afterwards") {
       val first            = Lanes.empty[String, Int](limitsOf(size = 10)).admit("k", Item(1, 1, 0)).get

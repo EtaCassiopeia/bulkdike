@@ -24,6 +24,10 @@ import zio.Duration
  * @param maxQueuedWeight
  *   Maximum total weight of the inputs waiting, across all keys. Further inputs are rejected with
  *   [[BulkDikeError.Rejected]]. With weights in bytes, this bounds the memory held by waiting inputs.
+ * @param directIdleKeys
+ *   Whether, with a zero `maxBatchDelay`, an idle key's input is sent at once by its own caller (the default), or by a
+ *   worker like any batch. Turn it off when the downstream needs a hard bound on concurrent calls: direct calls are not
+ *   counted against `maxInFlightBatches`.
  */
 final case class PerKeyConfig private (
   maxBatchSize: Int,
@@ -31,7 +35,8 @@ final case class PerKeyConfig private (
   maxBatchDelay: Duration,
   maxInFlightBatches: Int,
   maxQueueing: Int,
-  maxQueuedWeight: Long
+  maxQueuedWeight: Long,
+  directIdleKeys: Boolean
 )
 
 object PerKeyConfig:
@@ -42,7 +47,8 @@ object PerKeyConfig:
     maxQueueing: Int,
     maxBatchDelay: Duration = Duration.Zero,
     maxBatchWeight: Long = Long.MaxValue,
-    maxQueuedWeight: Long = Long.MaxValue
+    maxQueuedWeight: Long = Long.MaxValue,
+    directIdleKeys: Boolean = true
   ): Either[InvalidConfig, PerKeyConfig] =
     InvalidConfig.unless(
       InvalidConfig.batching(maxBatchSize, maxBatchDelay, maxInFlightBatches, maxQueueing) ++ Seq(
@@ -51,4 +57,14 @@ object PerKeyConfig:
           s"maxQueuedWeight ($maxQueuedWeight) must be at least maxBatchWeight ($maxBatchWeight), or batches could never fill"
         )
       )*
-    )(new PerKeyConfig(maxBatchSize, maxBatchWeight, maxBatchDelay, maxInFlightBatches, maxQueueing, maxQueuedWeight))
+    )(
+      new PerKeyConfig(
+        maxBatchSize,
+        maxBatchWeight,
+        maxBatchDelay,
+        maxInFlightBatches,
+        maxQueueing,
+        maxQueuedWeight,
+        directIdleKeys
+      )
+    )

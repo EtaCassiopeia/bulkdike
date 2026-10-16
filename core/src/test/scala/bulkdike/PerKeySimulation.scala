@@ -12,12 +12,14 @@ import zio.test.*
  */
 object PerKeySimulation:
 
-  final case class Input(id: Int, key: Int, weight: Long)
+  /** `rank` is the input's place in its key's `Order.by`; all zero in a scenario that keeps arrival order. */
+  final case class Input(id: Int, key: Int, weight: Long, rank: Long)
   final case class Submission(input: Input, gapMs: Long, cancelAfterMs: Option[Long])
 
   final case class Scenario(
     config: PerKeyConfig,
     weighted: Boolean,
+    ranked: Boolean,
     submissions: List[Submission],
     latenciesMs: Chunk[Long],
     failEvery: Int,
@@ -60,10 +62,12 @@ object PerKeySimulation:
       count    <- Gen.int(1, 40)
       queueing <- Gen.int(size, 40)
       queuedW  <- if weighted then Gen.long(maxW, 60) else Gen.const(Long.MaxValue)
-      config = PerKeyConfig.make(size, inFlight, queueing, delayMs.millis, maxW, queuedW).toOption.get
+      direct   <- Gen.boolean
+      ranked   <- Gen.boolean
+      config = PerKeyConfig.make(size, inFlight, queueing, delayMs.millis, maxW, queuedW, direct).toOption.get
       submissions <- Gen.listOfN(count)(
-        Gen.int(0, 3) <*> Gen.long(1, 6) <*> Gen.long(0, 3).map(_ * 5) <*>
-          (if cancellations then Gen.option(Gen.long(0, 8).map(_ * 5)) else Gen.none)
+        Gen.int(0, 3) <*> Gen.long(1, 6) <*> (if ranked then Gen.long(0, 3) else Gen.const(0L)) <*>
+          Gen.long(0, 3).map(_ * 5) <*> (if cancellations then Gen.option(Gen.long(0, 8).map(_ * 5)) else Gen.none)
       )
       latencies <- Gen.chunkOfBounded(1, 8)(Gen.long(0, 8).map(_ * 5))
       failEvery <- Gen.oneOf(Gen.int(2, 6), Gen.const(Int.MaxValue))
@@ -71,8 +75,9 @@ object PerKeySimulation:
     yield Scenario(
       config,
       weighted,
-      submissions.zipWithIndex.map { case ((key, weight, gap, cancel), id) =>
-        Submission(Input(id, key, if weighted then weight else 1L), gap, cancel)
+      ranked,
+      submissions.zipWithIndex.map { case ((key, weight, rank, gap, cancel), id) =>
+        Submission(Input(id, key, if weighted then weight else 1L, rank), gap, cancel)
       },
       latencies,
       failEvery,
@@ -98,27 +103,28 @@ object PerKeySimulation:
       // Set by each client, so a call made by a client rather than a worker (forked at creation) can tell who made it.
       caller <- FiberRef.make(Option.empty[Int])
       dike   <- scope.extend(
-        BulkDike.perKey(s.config, (_: Input).key, (_: Input).weight) { (key, inputs: NonEmptyChunk[Input]) =>
-          // Bookkeeping is acquired and released as one: a direct call is interrupted whenever its caller is, which
-          // must not leave a key counted as busy.
-          val enter =
-            for
-              n      <- serials.getAndUpdate(_ + 1)
-              start  <- nowMs
-              direct <- caller.get
-              // Only workers' batches count against maxInFlightBatches.
-              _    <- current.updateAndGet(_ + 1).flatMap(c => peak.update(_ max c)).when(direct.isEmpty)
-              busy <- perKey.modify(m => m.getOrElse(key, 0) -> m.updated(key, m.getOrElse(key, 0) + 1))
-              _    <- overlap.update(_ + key).when(busy > 0)
-              fails = n % s.failEvery == s.failEvery - 1
-              _ <- calls.update(_ :+ Call(n, key, inputs.toChunk, start, fails, direct))
-            yield (n, fails, direct.isEmpty)
-          ZIO.acquireReleaseWith(enter) { (_, _, worker) =>
-            current.update(_ - 1).when(worker) *> perKey.update(m => m.updated(key, m(key) - 1))
-          } { (n, fails, _) =>
-            ZIO.sleep(s.latenciesMs(n % s.latenciesMs.size).millis) *>
-              ZIO.fail("unavailable").when(fails).as(inputs.map(i => i.id -> i.id * 10).toMap)
-          }
+        BulkDike.perKey(s.config, (_: Input).key, (_: Input).weight, Order.by((_: Input).rank)) {
+          (key, inputs: NonEmptyChunk[Input]) =>
+            // Bookkeeping is acquired and released as one: a direct call is interrupted whenever its caller is, which
+            // must not leave a key counted as busy.
+            val enter =
+              for
+                n      <- serials.getAndUpdate(_ + 1)
+                start  <- nowMs
+                direct <- caller.get
+                // Only workers' batches count against maxInFlightBatches.
+                _    <- current.updateAndGet(_ + 1).flatMap(c => peak.update(_ max c)).when(direct.isEmpty)
+                busy <- perKey.modify(m => m.getOrElse(key, 0) -> m.updated(key, m.getOrElse(key, 0) + 1))
+                _    <- overlap.update(_ + key).when(busy > 0)
+                fails = n % s.failEvery == s.failEvery - 1
+                _ <- calls.update(_ :+ Call(n, key, inputs.toChunk, start, fails, direct))
+              yield (n, fails, direct.isEmpty)
+            ZIO.acquireReleaseWith(enter) { (_, _, worker) =>
+              current.update(_ - 1).when(worker) *> perKey.update(m => m.updated(key, m(key) - 1))
+            } { (n, fails, _) =>
+              ZIO.sleep(s.latenciesMs(n % s.latenciesMs.size).millis) *>
+                ZIO.fail("unavailable").when(fails).as(inputs.map(i => i.id -> i.id * 10).toMap)
+            }
         }((input, results) => results(input.id))
       )
       classify = (exit: Exit[BulkDikeError[String], Int]) =>
@@ -187,9 +193,19 @@ object PerKeySimulation:
         "rejected although everything fits in the queue"
       )
     ).flatten ++
+      // An input must not be overtaken by one sent before it unless it arrived after that one was taken (a late low rank
+      // goes in the next batch). Times are whole milliseconds, so only strictly earlier arrivals count as waiting.
       byKey.toList.flatMap { (key, calls) =>
-        val times = calls.flatMap(_.inputs.map(i => t.submittedAtMs(i.id)))
-        Option.when(times != times.sorted)(s"key $key sent out of submission order: ${calls.map(_.inputs.map(_.id))}")
+        val sentInOrder = calls.flatMap(c => c.inputs.map(_ -> c.startMs))
+        val overtaken   = sentInOrder.zipWithIndex.flatMap { case ((a, takenAt), i) =>
+          sentInOrder.drop(i + 1).collect {
+            case (b, _)
+                if t.submittedAtMs(b.id) < takenAt && (b.rank < a.rank ||
+                  b.rank == a.rank && t.submittedAtMs(b.id) < t.submittedAtMs(a.id)) =>
+              s"${b.id} after ${a.id}"
+          }
+        }
+        Option.when(overtaken.nonEmpty)(s"key $key sent out of order: $overtaken in ${calls.map(_.inputs.map(_.id))}")
       } ++
       t.calls.toList.flatMap { c =>
         val w = c.inputs.map(_.weight).sum
