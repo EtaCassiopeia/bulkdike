@@ -1,7 +1,8 @@
 # Design decisions
 
 Each record states a decision, why it was made, and what it costs. Records are not edited after the fact except to
-mark them superseded; a changed decision gets a new record.
+mark them superseded; a changed decision gets a new record. Proposals not yet decided live in
+[`docs/design`](../design/ordering.md).
 
 | #                                       | Decision                                                                 | Status   |
 |-----------------------------------------|--------------------------------------------------------------------------|----------|
