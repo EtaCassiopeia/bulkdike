@@ -51,6 +51,9 @@ them.
 
 The build runs in strict mode: a broken link or a missing snippet fails it.
 
+The animation in the README and on the home page, `docs/assets/ferry.svg`, is generated: edit
+`scripts/ferry-svg.py` and run `python3 scripts/ferry-svg.py`.
+
 ## Decision records
 
 A design decision gets a record in `docs/decisions`: context, decision, consequences. Records are not edited after the

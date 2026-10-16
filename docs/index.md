@@ -8,16 +8,7 @@ The name is the idea: like a ferry, each batch carries whoever gathered while th
 soon as it is back. A lone passenger crosses at once; a crowd fills the next crossing. Ferry was called BulkDike
 until [0013](decisions/0013-rename-to-ferry.md).
 
-```mermaid
-flowchart LR
-  subgraph callers [Concurrent callers]
-    c1[caller] & c2[caller] & c3[caller] & c4[caller]
-  end
-  callers -- "ferry(input)" --> d[Ferry<br/>bounded waiting room<br/>batch slots]
-  d -- "call(batch)" --> s[(External system)]
-  s -- batch result --> d
-  d -- "each caller's share" --> callers
-```
+![Ferry.perKey: an idle key's input is sent at once; a busy key's inputs wait in its lane while its call is in flight and leave together in its next call, in order, one call per key at a time.](assets/ferry.svg)
 
 ## Two ways to batch
 

@@ -6,6 +6,10 @@
 A ZIO 2 micro-batching bulkhead. It coalesces concurrent calls into batched calls to an external system, caps how
 many batches run at once and how many inputs may wait, and gives each caller its own share of the result.
 
+<p align="center">
+  <img src="docs/assets/ferry.svg" width="100%" alt="Ferry.perKey: an idle key's input is sent at once; a busy key's inputs wait in its lane while its call is in flight and leave together in its next call, in order, one call per key at a time.">
+</p>
+
 **[Documentation](https://etacassiopeia.github.io/zio-ferry/)**: [getting started](https://etacassiopeia.github.io/zio-ferry/getting-started/),
 [guide](https://etacassiopeia.github.io/zio-ferry/guide/batching/),
 [architecture](https://etacassiopeia.github.io/zio-ferry/architecture/),
