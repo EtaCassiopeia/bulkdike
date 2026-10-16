@@ -169,6 +169,13 @@ object LanesSpec extends ZIOSpecDefault:
       val lanes  = Lanes.empty[String, Int](limits).admit("k", Item(1, 1, submittedAt = 5)).get
       assertTrue(lanes.next(now = 10).left.toOption == Some(Some(Long.MaxValue)))
     },
+    test("sends a lane that outgrew maxBatchSize while busy straight away, without waiting for the delay") {
+      val limits = limitsOf(size = 2, delay = 1000)
+      val first  = Lanes.empty[String, Int](limits).admit("k", Item(1, 1, 0)).get.admit("k", Item(2, 1, 0)).get
+      val (_, _, inFlight) = first.next(0).toOption.get
+      val piled            = (3 to 7).foldLeft(inFlight)((l, n) => l.admit("k", Item(n, 1, 0)).get)
+      assertTrue(piled.release("k").next(now = 1).map(_._2.toList) == Right(List(3, 4)))
+    },
     test("sends a single input heavier than maxBatchWeight on its own") {
       val lanes = Lanes
         .empty[String, Int](limitsOf(size = 10, weight = 5))
