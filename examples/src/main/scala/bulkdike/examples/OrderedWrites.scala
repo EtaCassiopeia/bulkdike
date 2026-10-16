@@ -1,6 +1,6 @@
 package bulkdike.examples
 
-import bulkdike.{BulkDike, BulkDikeError, PerKeyConfig}
+import bulkdike.{BulkDike, BulkDikeError, FoldWrite, Order, PerKeyConfig}
 import zio.*
 
 /**
@@ -9,14 +9,15 @@ import zio.*
  * limited by round trips, not by entries.
  *
  * `BulkDike.perKey` makes this process the only writer of each entity: the entries of an entity that arrive while its
- * previous write is in flight travel together in the next one, and different entities are written in parallel. The
- * write itself is fenced and idempotent (see `docs/decisions/0005-fenced-single-writer.md`), so retrying it is safe.
+ * previous write is in flight travel together in the next one, and different entities are written in parallel. Entries
+ * carry an effective day, and those that wait together are written in effective-day order. The write itself is fenced
+ * and idempotent (see `docs/decisions/0005-fenced-single-writer.md`), so retrying it is safe.
  *
  * Run with: `examples/runMain bulkdike.examples.OrderedWrites`
  */
 object OrderedWrites extends ZIOAppDefault:
 
-  final case class Entry(id: String, entity: String, amount: Long)
+  final case class Entry(id: String, entity: String, amount: Long, effectiveDay: Long)
 
   enum StoreError:
     case Throttled, Conflict
@@ -39,23 +40,26 @@ object OrderedWrites extends ZIOAppDefault:
       }
 
   /**
-   * One round trip per batch: read the log, leave out entries already applied (a retried write may have landed), append
-   * the rest only if the log has not changed since it was read, and answer every entry on its own. An invalid entry is
-   * rejected without failing the others; only a store error fails, and retries, the whole batch.
+   * Applies one entry to an entity's log as read: an invalid entry is rejected without failing the others, and an entry
+   * already in the log (a retried write may have landed) is answered with its position instead of being appended again.
    */
-  def write(
-    store: Store
-  )(entity: String, entries: NonEmptyChunk[Entry]): IO[StoreError, Map[String, Either[String, Int]]] =
-    val (invalid, valid) = entries.toChunk.partition(_.amount == 0)
-    val roundTrip        =
-      for
-        log <- store.read(entity)
-        fresh = valid.map(_.id).distinct.filterNot(log.contains)
-        _ <- store.append(entity, log.size, fresh).when(fresh.nonEmpty)
-        after = log ++ fresh
-      yield valid.map(e => e.id -> Right(after.indexOf(e.id))).toMap ++
-        invalid.map(e => e.id -> Left("amount must not be zero"))
-    roundTrip.retry(Schedule.exponential(10.millis).jittered && Schedule.recurs(5))
+  def step(log: Vector[String], entry: Entry): (Vector[String], Either[String, Int]) =
+    if entry.amount == 0 then log -> Left("amount must not be zero")
+    else if log.contains(entry.id) then log -> Right(log.indexOf(entry.id))
+    else (log :+ entry.id)                  -> Right(log.size)
+
+  /**
+   * One round trip per batch: read the log, apply the entries, and append what is new only if the log has not changed
+   * since it was read. Only a store error fails, and retries, the whole batch.
+   */
+  def write(store: Store): FoldWrite[Any, StoreError, String, Entry, String, Vector[String], Either[String, Int]] =
+    FoldWrite(
+      id = _.id,
+      read = store.read,
+      step = step,
+      write = (entity, before, after) => store.append(entity, before.size, Chunk.fromIterable(after.drop(before.size))),
+      retry = Schedule.exponential(10.millis).jittered && Schedule.recurs(5)
+    )
 
   val run =
     ZIO.scoped {
@@ -64,16 +68,22 @@ object OrderedWrites extends ZIOAppDefault:
         requests <- Ref.make(0)
         store = Store(logs, requests)
         config <- ZIO.fromEither(
-          // No delay: an entity's entries wait only while its previous write is in flight. The weight limit keeps a
-          // write under the store's request size limit, with weights in (estimated) bytes.
+          // No delay: an entity's entries wait only while its previous write is in flight, and a quiet entity's entry is
+          // written at once. A small positive delay would let more out-of-order entries meet and be sorted, at that
+          // much latency. The weight limit keeps a write under the store's request size limit, in (estimated) bytes.
           PerKeyConfig.make(maxBatchSize = 25, maxInFlightBatches = 8, maxQueueing = 1000, maxBatchWeight = 2000)
         )
-        writer <- BulkDike.perKey(config, (_: Entry).entity, (e: Entry) => 40L + e.id.length)(write(store))(
-          (entry, outcomes) => outcomes(entry.id)
-        )
+        fold = write(store)
+        writer <- BulkDike.perKey(
+          config,
+          (_: Entry).entity,
+          (e: Entry) => 40L + e.id.length,
+          Order.by((_: Entry).effectiveDay)
+        )(fold.call)(fold.outcome)
         entries = Chunk.tabulate(300) { n =>
           val entity = if n % 5 == 0 then s"quiet-${n % 3}" else "busy" // most traffic goes to one entity
-          Entry(s"entry-$n", entity, amount = if n == 42 then 0 else n.toLong + 1)
+          val day    = 20000L + n / 10 - (if n % 11 == 0 then 3 else 0) // every eleventh entry is back-dated
+          Entry(s"entry-$n", entity, amount = if n == 42 then 0 else n.toLong + 1, effectiveDay = day)
         }
         outcomes <- ZIO.foreachPar(entries)(entry => writer(entry).either)
         rejected = outcomes.collect { case Right(Left(reason)) => reason }
