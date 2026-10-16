@@ -33,7 +33,7 @@ object BulkDike:
    * @param queued
    *   Inputs waiting in the queue. Inputs already taken into the batch being assembled are not counted.
    * @param inFlightBatches
-   *   Batch calls currently running.
+   *   Batch calls currently running, including a `perKey` dike's direct calls for idle keys.
    */
   final case class Metrics(queued: Int, inFlightBatches: Int)
 
@@ -73,10 +73,17 @@ object BulkDike:
   /**
    * Creates a BulkDike that batches each key's inputs separately, and keeps each key's batches in order.
    *
-   * Inputs with the same `key` are dispatched in submission order, in batches of that key only, and a key never has
-   * more than one batch in flight: its next batch is dispatched only once the previous one has completed. Different
-   * keys are batched independently and run concurrently, up to `maxInFlightBatches` in total. Keys with work waiting
-   * take turns, so a key that always has more never starves the others.
+   * Inputs with the same `key` are dispatched in `order` (by default, submission order), in batches of that key only,
+   * and a key never has more than one batch in flight: its next batch is dispatched only once the previous one has
+   * completed. Different keys are batched independently and run concurrently, up to `maxInFlightBatches` in total. Keys
+   * with work waiting take turns, so a key that always has more never starves the others.
+   *
+   * Only keys that are busy are batched. With the default `maxBatchDelay` of zero, an input for an idle key (nothing
+   * waiting, nothing in flight) is sent at once by its own caller, as a batch of one, without queueing or waiting for a
+   * worker: occasional traffic pays no batching cost and never waits behind busy keys. Inputs that arrive for the key
+   * while that call is in flight are batched behind it, so a key switches to batching exactly when it has concurrent
+   * work, and back when it is idle again. These direct calls are not counted against `maxInFlightBatches`, which bounds
+   * the batches of busy keys; at most one runs per idle key. `PerKeyConfig.directIdleKeys` turns them off.
    *
    * This suits writes that must be applied in order per entity, such as appends to a per-entity log guarded by a
    * conditional write: one writer per entity removes write contention, and each round trip carries everything that
@@ -89,15 +96,23 @@ object BulkDike:
    *   The entity an input belongs to.
    * @param weigh
    *   The weight of an input, such as its size in bytes, for `maxBatchWeight` and `maxQueuedWeight`. Defaults to 1.
+   * @param order
+   *   The order in which a key's waiting inputs are sent: see [[Order]]. Defaults to submission order.
    * @param call
-   *   The batch call, given the key and that key's inputs in submission order.
+   *   The batch call, given the key and that key's inputs in `order`. [[FoldWrite]] implements the common read-once,
+   *   apply, conditional-write call.
    * @param extract
    *   Picks one caller's result out of the batch result. If it throws, that caller gets the exception as a defect.
    */
-  def perKey[R, E, K, I, B, A](config: PerKeyConfig, key: I => K, weigh: I => Long = (_: Any) => 1L)(
+  def perKey[R, E, K, I, B, A](
+    config: PerKeyConfig,
+    key: I => K,
+    weigh: I => Long = (_: Any) => 1L,
+    order: Order[I] = Order.arrival
+  )(
     call: (K, NonEmptyChunk[I]) => ZIO[R, E, B]
   )(extract: (I, B) => A): URIO[R & Scope, BulkDike[I, E, A]] =
-    PerKeyDike.make(config, key, weigh)(call)(extract)
+    PerKeyDike.make(config, key, weigh, order)(call)(extract)
 
   private def distinct[I](inputs: NonEmptyChunk[I]): NonEmptyChunk[I] =
     NonEmptyChunk.fromIterable(inputs.head, inputs.tail.distinct.filterNot(_ == inputs.head))

@@ -43,16 +43,22 @@ object PerKeyStressSpec extends ZIOSpecDefault:
           overlap <- Ref.make(false)
           active  <- Ref.make(0)
           peak    <- Ref.make(0)
+          direct  <- Ref.make(Chunk.empty[NonEmptyChunk[Int]])
+          caller  <- FiberRef.make(false) // set by callers, so a call made by one rather than a worker is told apart
           exits   <- ZIO.scoped {
             for
               dike <- BulkDike.perKey(cfg, (_: Int) % keys, (id: Int) => (id % 5 + 1).toLong) {
                 (key, ids: NonEmptyChunk[Int]) =>
-                  val enter = active.updateAndGet(_ + 1).flatMap(n => peak.update(_ max n)) *>
-                    busy
-                      .modify(m => m.getOrElse(key, 0) -> m.updated(key, m.getOrElse(key, 0) + 1))
-                      .flatMap(n => overlap.set(true).when(n > 0))
-                  val exit = active.update(_ - 1) *> busy.update(m => m.updated(key, m(key) - 1))
-                  ZIO.acquireReleaseWith(enter)(_ => exit) { _ =>
+                  // Only workers' batches count against maxInFlightBatches.
+                  def enter(byCaller: Boolean) =
+                    (if byCaller then direct.update(_ :+ ids)
+                     else active.updateAndGet(_ + 1).flatMap(n => peak.update(_ max n))) *>
+                      busy
+                        .modify(m => m.getOrElse(key, 0) -> m.updated(key, m.getOrElse(key, 0) + 1))
+                        .flatMap(n => overlap.set(true).when(n > 0))
+                  def exit(byCaller: Boolean) =
+                    active.update(_ - 1).unless(byCaller) *> busy.update(m => m.updated(key, m(key) - 1))
+                  ZIO.acquireReleaseWith(caller.get.tap(enter))(exit) { _ =>
                     batches.update(_ :+ (key -> ids)) *>
                       Random.nextIntBounded(2).flatMap(ms => ZIO.sleep(ms.millis)) *>
                       ZIO.fail(s"batch ${ids.head}").when(failing(ids)).unit
@@ -62,7 +68,9 @@ object PerKeyStressSpec extends ZIOSpecDefault:
               // starts), so each key has a well-defined submission order; the keys themselves run in parallel.
               calls <- ZIO
                 .foreachPar(0 until keys) { key =>
-                  ZIO.foreach((0 until 1200).filter(_ % keys == key))(id => dike(id).fork.tap(admitted).map(id -> _))
+                  ZIO.foreach((0 until 1200).filter(_ % keys == key))(id =>
+                    caller.locally(true)(dike(id)).fork.tap(admitted).map(id -> _)
+                  )
                 }
                 .map(_.flatten.sortBy(_._1).map(_._2))
               _ <- ZIO.foreachDiscard(calls.zipWithIndex.collect { case (f, i) if i % 5 == 0 => f })(_.interrupt.fork)
@@ -72,6 +80,7 @@ object PerKeyStressSpec extends ZIOSpecDefault:
           sent        <- batches.get
           maxSeen     <- peak.get
           overlapping <- overlap.get
+          byCallers   <- direct.get
         yield
           val ids     = sent.flatMap(_._2.toChunk)
           val batchOf = sent.flatMap((_, b) => b.map(_ -> b)).toMap
@@ -95,6 +104,8 @@ object PerKeyStressSpec extends ZIOSpecDefault:
             wrong.isEmpty,
             !outOfOrder,
             maxSeen <= cfg.maxInFlightBatches,
+            byCallers.forall(_.size == 1),
+            byCallers.isEmpty || cfg.maxBatchDelay.isZero,
             sent.forall((key, b) => b.forall(_ % keys == key) && b.size <= cfg.maxBatchSize)
           )
       }

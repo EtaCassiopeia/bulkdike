@@ -4,8 +4,10 @@
 #
 #   BulkDike.tla      BulkDike.make: one queue, a forming lock, interruptible workers (safety and liveness)
 #     UnserialisedAdmission, NoCleanupOnInterrupt, NonAtomicTake      -> a caller is stranded
-#   PerKey.tla        BulkDike.perKey: per-key lanes, one batch in flight per key (safety and liveness)
-#     PerKeyNoBusyGuard   -> a key has two batches in flight
+#   PerKey.tla        BulkDike.perKey: per-key lanes in rank order, one call in flight per key, idle keys called directly
+#                     (PerKey) or every input batched (PerKeyBatchOnly); safety and liveness
+#     PerKeyUnsorted      -> inputs waiting together are sent out of rank order
+#     PerKeyNoBusyGuard, PerKeyNoDirectGuard, PerKeyNoAwaitCall -> a key has two calls in flight
 #     PerKeyNonAtomicTake, PerKeyNonAtomicAdmission -> a caller is stranded
 #   FencedWriter.tla  the single-writer-per-key deployment pattern, against a store with conditional appends
 #     FencedWriterUnfenced, FencedWriterNoDedup                         -> a command is applied twice
@@ -42,7 +44,10 @@ passes BulkDike BulkDike
 for variant in UnserialisedAdmission NoCleanupOnInterrupt NonAtomicTake; do fails BulkDike "$variant"; done
 
 passes PerKey PerKey
-for variant in PerKeyNoBusyGuard PerKeyNonAtomicTake PerKeyNonAtomicAdmission; do fails PerKey "$variant"; done
+passes PerKey PerKeyBatchOnly
+for variant in PerKeyUnsorted PerKeyNoBusyGuard PerKeyNoDirectGuard PerKeyNoAwaitCall PerKeyNonAtomicTake PerKeyNonAtomicAdmission; do
+  fails PerKey "$variant"
+done
 
 passes FencedWriter FencedWriter
 for variant in FencedWriterUnfenced FencedWriterNoDedup; do fails FencedWriter "$variant"; done

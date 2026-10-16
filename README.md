@@ -24,9 +24,9 @@ yield price
 
 `BulkDike.make(config)(call)(extract)` handles batch results that aren't maps.
 
-For writes that must stay in order per entity, `BulkDike.perKey` batches each key separately, with at most one batch in
-flight per key. By default a key's next batch leaves as soon as its previous one completes, so batches grow with load
-instead of waiting on a timer:
+For writes that must stay in order per entity, `BulkDike.perKey` batches each key separately, with at most one call in
+flight per key. Only busy keys are batched: an idle key's input is sent at once by its caller, and a key's next batch
+leaves as soon as its previous call completes, so batches grow with load instead of waiting on a timer:
 
 ```scala
 for
@@ -37,8 +37,9 @@ for
 yield writer
 ```
 
-See the [ordered-writes example](examples/src/main/scala/bulkdike/examples/OrderedWrites.scala) for the fenced,
-idempotent write it is meant to pair with.
+An `Order` sends a key's waiting inputs by a rank of your choice, such as an effective date, and `FoldWrite` packages
+the fenced, idempotent "read once, apply, conditional write" call it is meant to pair with. See the
+[ordered-writes example](examples/src/main/scala/bulkdike/examples/OrderedWrites.scala).
 
 ## Behaviour
 

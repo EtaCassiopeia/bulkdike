@@ -14,3 +14,6 @@ mark them superseded; a changed decision gets a new record.
 | [0007](0007-bound-by-weight.md)         | Bound batches and the waiting room by weight as well as count            | Accepted |
 | [0008](0008-deferred.md)                | Deferred: sharding, lock-free admission, adaptive concurrency, and more | Deferred |
 | [0009](0009-drop-mutation-testing.md)   | Drop mutation testing                                                    | Accepted |
+| [0010](0010-direct-calls-for-idle-keys.md) | Send an idle key's input directly; batch only keys with concurrent work | Accepted |
+| [0011](0011-pluggable-dispatch-order.md) | A key's waiting inputs are sent in a pluggable order                    | Accepted |
+| [0012](0012-fold-write-helper.md)       | Package "read once, apply, conditional write" as `FoldWrite`             | Accepted |
