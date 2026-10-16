@@ -1,0 +1,11 @@
+/* The logo's navy and blue */
+:root {
+  --md-primary-fg-color: #15335c;
+  --md-primary-fg-color--light: #2a4f80;
+  --md-primary-fg-color--dark: #0d2340;
+  --md-accent-fg-color: #0a78e2;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-typeset-a-color: #4ea3f0;
+}

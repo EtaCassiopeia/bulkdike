@@ -1,4 +1,9 @@
-# Ferry
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
+    <img src="docs/assets/logo.png" width="240" alt="zio-ferry">
+  </picture>
+</h1>
 
 [![CI](https://github.com/EtaCassiopeia/zio-ferry/actions/workflows/ci.yml/badge.svg)](https://github.com/EtaCassiopeia/zio-ferry/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-etacassiopeia.github.io%2Fzio-ferry-blue)](https://etacassiopeia.github.io/zio-ferry/)
