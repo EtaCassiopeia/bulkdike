@@ -13,16 +13,16 @@ but only if:
    write the loser is refused and retried, so concurrency turns into contention instead of throughput.
 2. **an entity's updates keep their order.** A later batch must not overtake an earlier one.
 
-`BulkDike.make` cannot provide either: it batches one undifferentiated stream and runs up to `maxInFlightBatches`
+`Ferry.make` cannot provide either: it batches one undifferentiated stream and runs up to `maxInFlightBatches`
 batches at once. Two ways to use it per entity both fail:
 
-- *One `BulkDike` per entity* costs a queue, a lock and worker fibers per entity: memory and scheduler load that grow
+- *One `Ferry` per entity* costs a queue, a lock and worker fibers per entity: memory and scheduler load that grow
   with the number of entities, most of them idle.
-- *One `BulkDike` for everything* mixes entities in a batch and runs batches of the same entity concurrently.
+- *One `Ferry` for everything* mixes entities in a batch and runs batches of the same entity concurrently.
 
 ## Decision
 
-Add `BulkDike.perKey`, a separate constructor with its own `PerKeyConfig`:
+Add `Ferry.perKey`, a separate constructor with its own `PerKeyConfig`:
 
 - **Each key has a lane**, a FIFO of its waiting inputs, created when its first input arrives and removed when it is
   empty and idle. Memory is proportional to waiting inputs, not to the number of keys ever seen.
@@ -33,11 +33,11 @@ Add `BulkDike.perKey`, a separate constructor with its own `PerKeyConfig`:
   that still has inputs when its batch completes joins the back of the line, so a key that always has more cannot
   starve the others.
 - **All state is one immutable value (`Lanes`) in one `TRef`.** Admission is one STM transaction with the check that
-  the dike is open, and taking a batch is one transaction with marking its key busy. This rules out, by construction,
+  the ferry is open, and taking a batch is one transaction with marking its key busy. This rules out, by construction,
   the races [0001](0001-single-queue-batcher.md) guards with a lock and an uninterruptible region. Recording a taken
   batch as owned by the worker happens in the same uninterruptible step as the take, so an interrupted worker can
   always release its callers.
-- `BulkDike.make` is unchanged: per-key ordering is a different guarantee, not a generalisation.
+- `Ferry.make` is unchanged: per-key ordering is a different guarantee, not a generalisation.
 
 The lane structure is pure so that it can be tested step by step against a model (`LanesSpec`), and the protocol is
 model-checked in `formal/PerKey.tla`, with variants showing that the busy guard, the atomic take and the atomic
@@ -47,7 +47,7 @@ admission are each needed.
 
 - An idle worker waits for any change to the lanes, or for the earliest waiting lane's deadline. Every admission wakes
   every idle worker; with a handful of workers this is cheap, and only the first finds work.
-- One `TRef` is contended by every caller. Under very high rates, several independent dikes, each owning a share of
+- One `TRef` is contended by every caller. Under very high rates, several independent ferries, each owning a share of
   the keys (`hash(key) % n`), spread that contention without changing any per-key guarantee, because every guarantee is
   local to a key. Building sharding in is deferred until a measurement asks for it ([0008](0008-deferred.md)).
 - A key that is busy for a long time holds its inputs back by design; `maxQueueing` and `maxQueuedWeight` bound how

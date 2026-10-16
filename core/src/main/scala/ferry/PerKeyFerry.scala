@@ -1,19 +1,19 @@
-package bulkdike
+package ferry
 
 import zio.*
 import zio.stm.*
 
-/** The implementation of [[BulkDike.perKey]]. */
-private[bulkdike] object PerKeyDike:
+/** The implementation of [[Ferry.perKey]]. */
+private[ferry] object PerKeyFerry:
 
-  final private case class Entry[I, E, A](input: I, result: Promise[BulkDikeError[E], A])
+  final private case class Entry[I, E, A](input: I, result: Promise[FerryError[E], A])
 
   private enum Admission:
     case Direct, Admitted, Full, Closed
 
   def make[R, E, K, I, B, A](config: PerKeyConfig, key: I => K, weigh: I => Long, order: Order[I])(
     call: (K, NonEmptyChunk[I]) => ZIO[R, E, B]
-  )(extract: (I, B) => A): URIO[R & Scope, BulkDike[I, E, A]] =
+  )(extract: (I, B) => A): URIO[R & Scope, Ferry[I, E, A]] =
     val limits = Lanes.Limits(
       maxBatchSize = config.maxBatchSize,
       maxBatchWeight = config.maxBatchWeight,
@@ -27,7 +27,7 @@ private[bulkdike] object PerKeyDike:
       open  <- TRef.make(true).commit
       env   <- ZIO.environment[R]
       scope <- ZIO.scope
-      dike = Live(
+      ferry = Live(
         key,
         weigh,
         order,
@@ -38,9 +38,9 @@ private[bulkdike] object PerKeyDike:
         scope
       )
       // Finalizers run in reverse order: workers are interrupted first, then whatever is still waiting is released.
-      _ <- ZIO.addFinalizer(dike.close)
-      _ <- ZIO.foreachDiscard(1 to config.maxInFlightBatches)(_ => dike.worker.forkScoped)
-    yield dike
+      _ <- ZIO.addFinalizer(ferry.close)
+      _ <- ZIO.foreachDiscard(1 to config.maxInFlightBatches)(_ => ferry.worker.forkScoped)
+    yield ferry
 
   /**
    * All state lives in one `TRef`, and every change to it is one STM transaction: admission is atomic with `close`, and
@@ -55,22 +55,22 @@ private[bulkdike] object PerKeyDike:
     lanes: TRef[Lanes[K, Entry[I, E, A]]],
     open: TRef[Boolean],
     scope: Scope
-  ) extends BulkDike[I, E, A]:
+  ) extends Ferry[I, E, A]:
 
-    override def apply(input: I): IO[BulkDikeError[E], A] =
+    override def apply(input: I): IO[FerryError[E], A] =
       ZIO.uninterruptibleMask { restore =>
         for
           // The application's functions run once, here, and never inside a transaction, which may retry.
           k           <- ZIO.succeed(key(input))
           rank        <- ZIO.succeed(order.rank(input))
           weight      <- ZIO.succeed(weigh(input) max 0L)
-          result      <- Promise.make[BulkDikeError[E], A]
+          result      <- Promise.make[FerryError[E], A]
           submittedAt <- Clock.nanoTime
           item = Lanes.Item(Entry(input, result), weight, submittedAt, rank)
           a <- admit(k, item).flatMap {
             case Admission.Direct   => direct(k, input, restore)
             case Admission.Admitted => restore(result.await).onInterrupt(result.interrupt)
-            case Admission.Full     => ZIO.fail(BulkDikeError.Rejected)
+            case Admission.Full     => ZIO.fail(FerryError.Rejected)
             case Admission.Closed   => ZIO.interrupt
           }
         yield a
@@ -78,12 +78,12 @@ private[bulkdike] object PerKeyDike:
 
     /**
      * Sends an input of an idle key at once, as a batch of one, without a queue or a worker. The call runs in the
-     * dike's scope, so closing the scope interrupts it like any batch in flight; the key is released only once the call
-     * is over.
+     * ferry's scope, so closing the scope interrupts it like any batch in flight; the key is released only once the
+     * call is over.
      */
-    private def direct(k: K, input: I, restore: ZIO.InterruptibilityRestorer): IO[BulkDikeError[E], A] =
+    private def direct(k: K, input: I, restore: ZIO.InterruptibilityRestorer): IO[FerryError[E], A] =
       call(k, NonEmptyChunk.single(input))
-        .mapBoth(BulkDikeError.Failed(_), extract(input, _))
+        .mapBoth(FerryError.Failed(_), extract(input, _))
         .interruptible // forked from an uninterruptible region, whose status it would otherwise inherit
         .forkIn(scope)
         .flatMap(fiber => restore(fiber.join).onInterrupt(fiber.interrupt))
@@ -91,8 +91,8 @@ private[bulkdike] object PerKeyDike:
 
     private def release(k: K): UIO[Unit] = lanes.update(_.release(k)).commit
 
-    override def metrics: UIO[BulkDike.Metrics] =
-      lanes.get.map(l => BulkDike.Metrics(l.queued, l.busy)).commit
+    override def metrics: UIO[Ferry.Metrics] =
+      lanes.get.map(l => Ferry.Metrics(l.queued, l.busy)).commit
 
     /**
      * Claims an idle key for a direct call, or else joins the key's lane, in one transaction with the check for close.
@@ -157,6 +157,6 @@ private[bulkdike] object PerKeyDike:
             case Exit.Success(b) =>
               ZIO.foreachDiscard(entries)(entry => entry.result.complete(ZIO.succeed(extract(entry.input, b))))
             case Exit.Failure(cause) =>
-              ZIO.foreachDiscard(entries)(_.result.failCause(cause.map(BulkDikeError.Failed(_))))
+              ZIO.foreachDiscard(entries)(_.result.failCause(cause.map(FerryError.Failed(_))))
           }
       }

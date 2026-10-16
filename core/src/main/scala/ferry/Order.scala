@@ -1,7 +1,7 @@
-package bulkdike
+package ferry
 
 /**
- * The order in which a [[BulkDike.perKey]] sends a key's waiting inputs: ascending `rank`, ties in arrival order.
+ * The order in which a [[Ferry.perKey]] sends a key's waiting inputs: ascending `rank`, ties in arrival order.
  *
  * Inputs that wait together are sent in rank order, so each batch is in rank order and, under load, so is everything
  * that arrived during the previous round trip. An input that arrives after inputs of a higher rank were already sent is

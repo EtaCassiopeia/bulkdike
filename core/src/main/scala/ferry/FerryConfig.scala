@@ -1,9 +1,9 @@
-package bulkdike
+package ferry
 
 import zio.{Duration, NonEmptyChunk}
 
 /**
- * Validated settings for a [[BulkDike]]. Construct with [[BulkDikeConfig.make]].
+ * Validated settings for a [[Ferry]]. Construct with [[FerryConfig.make]].
  *
  * @param maxBatchSize
  *   A batch is dispatched as soon as it holds this many inputs.
@@ -13,38 +13,38 @@ import zio.{Duration, NonEmptyChunk}
  * @param maxInFlightBatches
  *   Maximum number of batch calls running concurrently.
  * @param maxQueueing
- *   Maximum number of inputs waiting for a batch. Further inputs are rejected with [[BulkDikeError.Rejected]].
+ *   Maximum number of inputs waiting for a batch. Further inputs are rejected with [[FerryError.Rejected]].
  */
-final case class BulkDikeConfig private (
+final case class FerryConfig private (
   maxBatchSize: Int,
   maxBatchDelay: Duration,
   maxInFlightBatches: Int,
   maxQueueing: Int
 )
 
-object BulkDikeConfig:
+object FerryConfig:
 
   def make(
     maxBatchSize: Int,
     maxBatchDelay: Duration,
     maxInFlightBatches: Int,
     maxQueueing: Int
-  ): Either[InvalidConfig, BulkDikeConfig] =
+  ): Either[InvalidConfig, FerryConfig] =
     InvalidConfig.unless(
       InvalidConfig.batching(maxBatchSize, maxBatchDelay, maxInFlightBatches, maxQueueing)*
-    )(new BulkDikeConfig(maxBatchSize, maxBatchDelay, maxInFlightBatches, maxQueueing))
+    )(new FerryConfig(maxBatchSize, maxBatchDelay, maxInFlightBatches, maxQueueing))
 
 final case class InvalidConfig(problems: NonEmptyChunk[String])
-    extends IllegalArgumentException(problems.mkString("Invalid BulkDike configuration: ", "; ", ""))
+    extends IllegalArgumentException(problems.mkString("Invalid Ferry configuration: ", "; ", ""))
 
 object InvalidConfig:
 
   /** `valid`, unless any of `problems` is present. */
-  private[bulkdike] def unless[A](problems: Option[String]*)(valid: => A): Either[InvalidConfig, A] =
+  private[ferry] def unless[A](problems: Option[String]*)(valid: => A): Either[InvalidConfig, A] =
     NonEmptyChunk.fromIterableOption(problems.flatten).fold(Right(valid))(errors => Left(InvalidConfig(errors)))
 
-  /** The constraints shared by every kind of BulkDike. */
-  private[bulkdike] def batching(
+  /** The constraints shared by every kind of Ferry. */
+  private[ferry] def batching(
     maxBatchSize: Int,
     maxBatchDelay: Duration,
     maxInFlightBatches: Int,

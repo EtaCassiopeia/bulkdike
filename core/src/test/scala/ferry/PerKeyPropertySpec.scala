@@ -1,4 +1,4 @@
-package bulkdike
+package ferry
 
 import zio.*
 import zio.test.*
@@ -23,7 +23,7 @@ object PerKeyPropertySpec extends ZIOSpecDefault:
   private def violations(s: Scenario, writer: Writer) =
     FencedWriterSimulation.run(s, writer).map(FencedWriterSimulation.violations(s, _))
 
-  def spec = suite("BulkDike.perKey properties")(
+  def spec = suite("Ferry.perKey properties")(
     suite("simulated workloads")(
       test("honours its contract under random load, weights, latency and failures") {
         honoursContract(PerKeySimulation.scenario(cancellations = false, close = false))

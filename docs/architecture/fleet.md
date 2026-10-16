@@ -48,7 +48,7 @@ Both safeguards are needed, and each is shown to be needed:
 
 ## What a crash costs
 
-BulkDike keeps no write-ahead log: that would make the process a second source of truth. A crash loses what was waiting
+Ferry keeps no write-ahead log: that would make the process a second source of truth. A crash loses what was waiting
 and in flight on that process, at most `maxQueueing` inputs, and turns it into a wave of client retries. Nothing
 acknowledged is lost, because nothing is acknowledged before the store's write.
 

@@ -37,7 +37,7 @@ jobs:
       - name: Build the site
         run: |
           mkdocs build
-          api="$(dirname "$(find target -path '*/bulkdike/api/index.html' | head -n 1)")"
+          api="$(dirname "$(find target -path '*/zio-ferry/api/index.html' | head -n 1)")"
           test -d "$api" || { echo "Scaladoc output not found" >&2; exit 1; }
           cp -R "$api" site/api
       - uses: actions/upload-pages-artifact@v4

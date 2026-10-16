@@ -1,8 +1,8 @@
-site_name: BulkDike
+site_name: Ferry
 site_description: A ZIO 2 micro-batching bulkhead with per-key ordering, verified by simulation and model checking.
-site_url: https://etacassiopeia.github.io/bulkdike/
-repo_url: https://github.com/EtaCassiopeia/bulkdike
-repo_name: EtaCassiopeia/bulkdike
+site_url: https://etacassiopeia.github.io/zio-ferry/
+repo_url: https://github.com/EtaCassiopeia/zio-ferry
+repo_name: EtaCassiopeia/zio-ferry
 edit_uri: edit/main/docs/
 copyright: Apache License 2.0
 strict: true
@@ -49,7 +49,7 @@ markdown_extensions:
   - pymdownx.inlinehilite
   # Code samples are included from compiled sources, so they cannot drift from the API.
   - pymdownx.snippets:
-      base_path: [examples/src/main/scala/bulkdike/examples]
+      base_path: [examples/src/main/scala/ferry/examples]
       check_paths: true
       dedent_subsections: true
   - pymdownx.superfences:
@@ -70,8 +70,8 @@ nav:
       - Configuration and tuning: guide/configuration.md
   - Architecture:
       - architecture/index.md
-      - BulkDike.make: architecture/single-queue.md
-      - BulkDike.perKey: architecture/per-key.md
+      - Ferry.make: architecture/single-queue.md
+      - Ferry.perKey: architecture/per-key.md
       - Running on a fleet: architecture/fleet.md
   - Verification: verification.md
   - Design:
@@ -89,6 +89,7 @@ nav:
           - 0010 Direct calls for idle keys: decisions/0010-direct-calls-for-idle-keys.md
           - 0011 Pluggable dispatch order: decisions/0011-pluggable-dispatch-order.md
           - 0012 FoldWrite: decisions/0012-fold-write-helper.md
+          - 0013 Rename to Ferry: decisions/0013-rename-to-ferry.md
       - "Proposal: ordering, lateness, grouping": design/ordering.md
-  - API reference: https://etacassiopeia.github.io/bulkdike/api/
+  - API reference: https://etacassiopeia.github.io/zio-ferry/api/
   - Development: development.md

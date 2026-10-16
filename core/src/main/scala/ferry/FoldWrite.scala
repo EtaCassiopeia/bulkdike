@@ -1,4 +1,4 @@
-package bulkdike
+package ferry
 
 import zio.*
 
@@ -11,10 +11,10 @@ import zio.*
  * read, which includes inputs that an earlier attempt already applied (a write can land and its response be lost): it
  * should answer such an input without applying it again, so that retrying is safe (see `docs/decisions/0005`).
  *
- * Use it as the call and the extract of [[BulkDike.perKey]]:
+ * Use it as the call and the extract of [[Ferry.perKey]]:
  * {{{
  * val write = FoldWrite(id = (e: Entry) => e.id, read = store.read, step = apply, write = store.writeIf, retry = policy)
- * BulkDike.perKey(config, (e: Entry) => e.entity)(write.call)(write.outcome)
+ * Ferry.perKey(config, (e: Entry) => e.entity)(write.call)(write.outcome)
  * }}}
  *
  * @param id

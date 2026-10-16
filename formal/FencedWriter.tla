@@ -1,6 +1,6 @@
 ---------------------------- MODULE FencedWriter ----------------------------
 (***************************************************************************)
-(* The deployment pattern BulkDike.perKey is meant for, for one key (keys  *)
+(* The deployment pattern Ferry.perKey is meant for, for one key (keys  *)
 (* are independent).                                                      *)
 (*                                                                         *)
 (* Clients send commands to nodes. Each node runs one batch for the key at *)

@@ -31,7 +31,7 @@ Download [`tla2tools.jar`](https://github.com/tlaplus/tlaplus/releases) (CI uses
 formal/check.sh path/to/tla2tools.jar
 ```
 
-A change to the protocol in `BulkDike.scala`, `PerKeyDike.scala` or `Lanes.scala` needs a matching change to its
+A change to the protocol in `Ferry.scala`, `PerKeyFerry.scala` or `Lanes.scala` needs a matching change to its
 model. A new mechanism needs a variant without it that must fail.
 
 ## Documentation

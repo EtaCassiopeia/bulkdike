@@ -14,7 +14,7 @@ build order and migration path.
 
 ### A.1 The problem
 
-`BulkDike.perKey` batches inputs per key, keeps one call in flight per key, and dispatches a key's inputs in the order
+`Ferry.perKey` batches inputs per key, keeps one call in flight per key, and dispatches a key's inputs in the order
 they were admitted. "Admitted" means the instant the admission transaction committed: **arrival order**.
 
 Some inputs carry a time of their own: the moment the thing they describe happened (**event time**), or a sequence
@@ -149,7 +149,7 @@ do: the client submits no timestamp, the cluster stamps the input when it reache
 
 ```scala
 enum Late:
-  /** Fail the caller with `BulkDikeError.Late(by)`; the input is never sent. */
+  /** Fail the caller with `FerryError.Late(by)`; the input is never sent. */
   case Reject
   /** Send it anyway, in rank order among what is waiting; the store sees its event time and decides. */
   case Admit
@@ -176,17 +176,17 @@ final case class Update(entity: String, id: String, at: Instant, day: LocalDate)
 /** Order by event time, hold for 250 ms, admit anything up to one day late, and never mix days in one batch. */
 val order = Order.eventTime[Update](_.at, lateness = 250.millis)
 
-val writer: URIO[Scope, BulkDike[Update, StoreError, Either[Rejection, Position]]] =
+val writer: URIO[Scope, Ferry[Update, StoreError, Either[Rejection, Position]]] =
   for
     config <- ZIO.fromEither(PerKeyConfig.make(maxBatchSize = 25, maxInFlightBatches = 8, maxQueueing = 1000))
-    dike   <- BulkDike.perKey(
+    ferry  <- Ferry.perKey(
       config,
       key = (u: Update) => u.entity,
       order = order,
       late = (u: Update, by: Duration) => if by <= 1.day then Late.Admit else Late.Reject,
       partition = (u: Update) => u.day
     )((entity, updates) => store.append(entity, updates))((u, outcomes) => outcomes(u.id))
-  yield dike
+  yield ferry
 ```
 
 A strategy of one's own is a value of `Order[I]`; `OrderLaws` (A.6) checks it before it is trusted.
@@ -240,7 +240,7 @@ subset of a lane up to `MaxBatch`; a policy only narrows that choice):
 - **batches are per key and in rank order, ties by arrival**, and **never straddle a partition token**;
 - **nothing is dispatched before its `holdUntil`**.
 
-The plug-in's responsibilities, stated as laws and shipped as a reusable property suite (`bulkdike.laws.OrderLaws`, in
+The plug-in's responsibilities, stated as laws and shipped as a reusable property suite (`ferry.laws.OrderLaws`, in
 the test kit) so a custom `Order` can be checked without reading the kernel:
 
 - `rank`, `holdUntil`, `late` are pure and total, and `holdUntil(i, a) >= a`;
@@ -300,8 +300,8 @@ Split `Lanes` into a **kernel** and **policies**:
   item. Transactions compare numbers only.
 - The policy points are those of A.4, and only those: `key`, `weigh`, `Order`, `late`, `partition`, `directIdleKeys`,
   `call`, `extract`. Each returns a closed decision type.
-- `BulkDike.perKey` keeps its signature; new policies are optional parameters whose defaults reproduce today's behaviour.
-  `BulkDike.make` is unchanged: it is a different kernel (several batches of one stream in flight), with its own model.
+- `Ferry.perKey` keeps its signature; new policies are optional parameters whose defaults reproduce today's behaviour.
+  `Ferry.make` is unchanged: it is a different kernel (several batches of one stream in flight), with its own model.
 
 #### Consequences
 
@@ -314,7 +314,7 @@ Split `Lanes` into a **kernel** and **policies**:
 - Second-best alternative considered: per-entity actors (A.3). Rejected because the global bounds and fairness would
   leave the one pure value, at a cost in verifiability and a fiber per active key, for no extra guarantee.
 
-### 0011. Dispatch order is a per-dike strategy: arrival, sorted, or event time with a bound
+### 0011. Dispatch order is a per-ferry strategy: arrival, sorted, or event time with a bound
 
 Status: Proposed
 
@@ -338,7 +338,7 @@ store's verdict, because the store holds the state and the batcher's view is one
   eligible (`at(b) + L > now >= at(a) + L`) or ranked after `a`; if `b` arrived after, `b` not late gives
   `at(b) >= arrival(b) − L > take(a) − L >= at(a)`.
 - A late input goes to the `late` handler: `Late.Admit` (default; sorted in among what is waiting) or `Late.Reject`
-  (`BulkDikeError.Late(by)`, never sent). `BulkDikeError` gains the case `Late(by: Duration) extends BulkDikeError[Nothing]`;
+  (`FerryError.Late(by)`, never sent). `FerryError` gains the case `Late(by: Duration) extends FerryError[Nothing]`;
   `fold` gains a parameter.
 - `maxBatchDelay` keeps its meaning as a ceiling on waiting *after* eligibility; `holdUntil` is a floor. The direct path
   needs a zero floor and a zero ceiling.
@@ -453,7 +453,7 @@ under each built-in `Order` and check each trace against the kernel model.
    by the stronger model (every existing invariant now holds for any policy).
 2. **0011 `Order.by` and `partition` (0012).** Smallest useful step; serves stores that re-sequence themselves and group
    operations with boundaries; `LanesSpec` and simulation checks for rank order and homogeneity.
-3. **0011 `Order.eventTime` + `late` + `BulkDikeError.Late` + `OrderLaws` + `PerKeyEventTime.tla`.** The asked-for
+3. **0011 `Order.eventTime` + `late` + `FerryError.Late` + `OrderLaws` + `PerKeyEventTime.tla`.** The asked-for
    pluggable decision with the "ordered unless late" guarantee. Build it even if the first consumer does not need it:
    the public design must serve append-only stores, and the guarantee is the one worth model-checking.
 4. **`directIdleKeys` switch.** Trivial once 1 is in; for downstreams with a hard connection limit.
@@ -466,11 +466,11 @@ pattern), retries, membership and routing, two-phase or pending workflows, a dur
 
 ### C.4 Migration
 
-- Source compatibility: every new parameter of `BulkDike.perKey` is optional with today's behaviour as default;
+- Source compatibility: every new parameter of `Ferry.perKey` is optional with today's behaviour as default;
   `PerKeyConfig.make` gains `directIdleKeys: Boolean = true`.
-- Binary/semantic break: `BulkDikeError.Late` is a new enum case, so exhaustive matches and `fold` callers must add a
+- Binary/semantic break: `FerryError.Late` is a new enum case, so exhaustive matches and `fold` callers must add a
   branch; shipped with step 3 and a minor-version bump, called out in the changelog.
-- `Lanes` and its tests are internal; the split happens behind `private[bulkdike]`.
+- `Lanes` and its tests are internal; the split happens behind `private[ferry]`.
 - Formal: `PerKey.tla` keeps its name and its five variants; order moves to the refinements, so `check.sh` gains two
   passing and three failing configurations.
-- Nothing is dropped from the public API, and `BulkDike.make` is untouched.
+- Nothing is dropped from the public API, and `Ferry.make` is untouched.

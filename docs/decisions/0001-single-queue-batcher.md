@@ -1,6 +1,6 @@
 # 0001. One admission queue, one batch assembled at a time
 
-Status: Accepted (recorded after the fact for the ZIO 2 rewrite of `BulkDike.make`)
+Status: Accepted (recorded after the fact for the ZIO 2 rewrite of `Ferry.make`)
 
 ## Context
 
@@ -11,7 +11,7 @@ error, or an interruption.
 
 ## Decision
 
-- **A bounded, dropping queue for admission.** A full queue rejects immediately (`BulkDikeError.Rejected`) instead of
+- **A bounded, dropping queue for admission.** A full queue rejects immediately (`FerryError.Rejected`) instead of
   blocking the caller: under overload, failing fast is the only answer that does not grow latency without bound.
 - **One worker per batch slot, and a forming lock.** `maxInFlightBatches` workers each assemble and run batches, but only
   the lock holder assembles, so a batch is never split between two idle workers.
@@ -22,8 +22,8 @@ error, or an interruption.
 - **Taking inputs off the queue and recording them as owned by the worker is one uninterruptible step**, and an
   interrupted worker interrupts every caller it owns.
 - **Callers interrupted before dispatch are left out of their batch**; their promise is already complete.
-- **Typed errors and validated configuration.** `BulkDikeError` separates rejection from batch failure; a defect stays a
-  defect. `BulkDikeConfig.make` reports every invalid setting at once.
+- **Typed errors and validated configuration.** `FerryError` separates rejection from batch failure; a defect stays a
+  defect. `FerryConfig.make` reports every invalid setting at once.
 
 ## Consequences
 

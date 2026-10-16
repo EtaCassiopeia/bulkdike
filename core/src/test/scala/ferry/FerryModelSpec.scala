@@ -1,16 +1,16 @@
-package bulkdike
+package ferry
 
 import zio.*
 import zio.test.*
 
 /**
- * Compares a real BulkDike, step by step, with an executable specification of its batching rules.
+ * Compares a real Ferry, step by step, with an executable specification of its batching rules.
  *
  * Batch calls here complete instantly, so the only things deciding batch composition and timing are arrivals and the
  * passage of time. Each step settles the TestClock before the next, which makes the run deterministic and lets the
  * model predict every batch, its contents in order, and the instant it is dispatched.
  */
-object BulkDikeModelSpec extends ZIOSpecDefault:
+object FerryModelSpec extends ZIOSpecDefault:
 
   enum Op:
     case Submit
@@ -56,22 +56,22 @@ object BulkDikeModelSpec extends ZIOSpecDefault:
     ZIO.scoped {
       for
         cfg <- ZIO
-          .fromEither(BulkDikeConfig.make(maxBatchSize, maxBatchDelayMs.millis, maxInFlightBatches, 64))
+          .fromEither(FerryConfig.make(maxBatchSize, maxBatchDelayMs.millis, maxInFlightBatches, 64))
           .orDie
         start <- Clock.nanoTime // the TestClock keeps running across samples
         log   <- Ref.make(Vector.empty[(Vector[Int], Long)])
-        dike  <- BulkDike.make(cfg) { (ids: NonEmptyChunk[Int]) =>
+        ferry <- Ferry.make(cfg) { (ids: NonEmptyChunk[Int]) =>
           Clock.nanoTime.flatMap(t => log.update(_ :+ (ids.toVector -> (t - start) / 1_000_000)))
         }((id, _) => id)
         _ <- ZIO.foldLeft(ops)(0) {
-          case (id, Op.Submit)      => dike(id).fork *> TestClock.adjust(Duration.Zero).as(id + 1)
+          case (id, Op.Submit)      => ferry(id).fork *> TestClock.adjust(Duration.Zero).as(id + 1)
           case (id, Op.Advance(ms)) => TestClock.adjust(ms.millis).as(id)
         }
         out <- log.get
       yield out
     }
 
-  def spec = suite("BulkDike against its model")(
+  def spec = suite("Ferry against its model")(
     test("dispatches exactly the batches the model predicts, in order, at the predicted instants") {
       check(runs) { (maxBatchSize, maxBatchDelayMs, maxInFlightBatches, ops) =>
         val expected = ops.foldLeft(Model(maxBatchSize, maxBatchDelayMs.toLong))(_.step(_)).dispatched

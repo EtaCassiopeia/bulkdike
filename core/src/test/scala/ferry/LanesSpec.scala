@@ -1,14 +1,14 @@
-package bulkdike
+package ferry
 
 import scala.collection.immutable.Queue
 
 import zio.*
 import zio.test.*
 
-import bulkdike.Lanes.*
+import ferry.Lanes.*
 
 /**
- * Drives the pure lane structure behind `BulkDike.perKey` through random sequences of claims, admissions, takes and
+ * Drives the pure lane structure behind `Ferry.perKey` through random sequences of claims, admissions, takes and
  * releases, and checks every step against a simple model: one FIFO of waiting items per key, and the set of busy keys.
  */
 object LanesSpec extends ZIOSpecDefault:

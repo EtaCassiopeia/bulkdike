@@ -1,6 +1,6 @@
 ------------------------------- MODULE PerKey -------------------------------
 (***************************************************************************)
-(* The concurrency protocol of bulkdike.BulkDike.perKey, at the            *)
+(* The concurrency protocol of ferry.Ferry.perKey, at the            *)
 (* granularity of its atomic steps (STM transactions and uninterruptible  *)
 (* regions).                                                               *)
 (*                                                                         *)
@@ -16,7 +16,7 @@
 (*                                                                         *)
 (* With Direct (a zero maxBatchDelay), a caller whose key is idle claims *)
 (* the key in the admission transaction and sends its input itself, as a  *)
-(* batch of one, from a fiber forked into the dike's scope; it releases   *)
+(* batch of one, from a fiber forked into the ferry's scope; it releases   *)
 (* the key once that call is over. Without Direct, every input is         *)
 (* batched by a worker.                                                   *)
 (*                                                                         *)

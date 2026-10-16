@@ -1,12 +1,12 @@
-package bulkdike
+package ferry
 
 import scala.collection.immutable.{Queue, TreeMap}
 
 import zio.{Chunk, NonEmptyChunk}
 
 /**
- * The waiting room behind [[BulkDike.perKey]]: one lane per key, as a pure value so that every transition can be tested
- * on its own and checked against the TLA+ model in `formal/PerKey.tla`.
+ * The waiting room behind [[Ferry.perKey]]: one lane per key, as a pure value so that every transition can be tested on
+ * its own and checked against the TLA+ model in `formal/PerKey.tla`.
  *
  * A key has a lane while it has items waiting or a call in flight. A lane keeps its items in ascending rank, ties in
  * arrival order, and is in exactly one state:
@@ -18,7 +18,7 @@ import zio.{Chunk, NonEmptyChunk}
  * Ready lanes are served first come, first served. A lane that still holds items when its batch completes joins the
  * back of the line, so a key that is always busy cannot starve the others.
  */
-final private[bulkdike] case class Lanes[K, X](
+final private[ferry] case class Lanes[K, X](
   limits: Lanes.Limits,
   lanes: Map[K, Lanes.Lane[X]],
   ready: Queue[K],

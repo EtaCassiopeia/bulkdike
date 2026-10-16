@@ -1,15 +1,19 @@
-# BulkDike
+# Ferry
 
-BulkDike is a micro-batching bulkhead for [ZIO 2](https://zio.dev) and Scala 3. It sits between many concurrent callers
+Ferry is a micro-batching bulkhead for [ZIO 2](https://zio.dev) and Scala 3. It sits between many concurrent callers
 and an external system. It coalesces their individual calls into batched calls, limits how much load reaches the
 system, and hands each caller its own share of the result.
+
+The name is the idea: like a ferry, each batch carries whoever gathered while the previous one was away, and leaves as
+soon as it is back. A lone passenger crosses at once; a crowd fills the next crossing. Ferry was called BulkDike
+until [0013](decisions/0013-rename-to-ferry.md).
 
 ```mermaid
 flowchart LR
   subgraph callers [Concurrent callers]
     c1[caller] & c2[caller] & c3[caller] & c4[caller]
   end
-  callers -- "dike(input)" --> d[BulkDike<br/>bounded waiting room<br/>batch slots]
+  callers -- "ferry(input)" --> d[Ferry<br/>bounded waiting room<br/>batch slots]
   d -- "call(batch)" --> s[(External system)]
   s -- batch result --> d
   d -- "each caller's share" --> callers
@@ -17,12 +21,12 @@ flowchart LR
 
 ## Two ways to batch
 
-`BulkDike.make` and `BulkDike.keyed`
+`Ferry.make` and `Ferry.keyed`
 :   Batch one stream of independent calls, such as price or profile lookups, to an API that accepts many per request.
     A batch leaves when it is full, or a fixed delay after its oldest input arrived. Several batches may be in flight
     at once. [Read more](guide/batching.md).
 
-`BulkDike.perKey`
+`Ferry.perKey`
 :   Batch the writes of each entity separately and keep them in order, with at most one call in flight per entity.
     Quiet entities are not batched at all: their calls go straight through. Busy entities get batches that grow with
     load, at no added latency. Inputs can be sent in an order of your choice, such as an effective date.

@@ -15,7 +15,7 @@ Each technique covers what the others cannot:
 | Layer | What it gives | Where |
 |---|---|---|
 | Unit tests on virtual time | Exact timing of deadlines and delays | `*Spec.scala` |
-| Model-based tests | Batches and dispatch instants agree with an executable specification | `BulkDikeModelSpec`, `LanesSpec` |
+| Model-based tests | Batches and dispatch instants agree with an executable specification | `FerryModelSpec`, `LanesSpec` |
 | Seeded simulations | Random workloads, failures, interruptions and shutdown, every trace checked against the contract | `Simulation`, `PerKeySimulation`, `FencedWriterSimulation` |
 | Stress tests on the real scheduler | Interleavings virtual time never picks | `*StressSpec` |
 | TLA+ / TLC | Every interleaving of the protocol in a small instance, for safety and liveness | `formal/` |
@@ -35,5 +35,5 @@ Two rules tie the layers together:
   atomic steps (one action per STM transaction or uninterruptible region) so that a change to the code maps to a change
   in the model. Trace validation would close the gap mechanically; see [0008](0008-deferred.md).
 - Mutation testing costs one full test run per mutant, so it runs weekly in CI, not on every push.
-- Sample counts and test timeouts are overridable (`BULKDIKE_SAMPLES`, `BULKDIKE_TEST_TIMEOUT_SECONDS`) so that a
+- Sample counts and test timeouts are overridable (`FERRY_SAMPLES`, `FERRY_TEST_TIMEOUT_SECONDS`) so that a
   mutation run stays affordable and a hanging mutant fails fast.

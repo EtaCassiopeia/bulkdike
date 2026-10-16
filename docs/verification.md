@@ -1,17 +1,17 @@
 # Verification
 
 A batcher's bugs are concurrency bugs: a caller left waiting forever, an input sent twice, a key with two calls in
-flight, a batch out of order. Example-based tests cover only the interleavings someone thought of, so BulkDike is
+flight, a batch out of order. Example-based tests cover only the interleavings someone thought of, so Ferry is
 checked in layers, each covering what the others cannot. See [0002](decisions/0002-layered-verification.md) and
 [0009](decisions/0009-drop-mutation-testing.md).
 
 | Layer | What it gives | Where |
 |---|---|---|
-| Unit tests on virtual time | exact timing of deadlines and delays | `BulkDikeSpec`, `PerKeySpec`, `FoldWriteSpec` |
-| Model-based tests | batches and dispatch instants agree with an independent executable model, step by step | `BulkDikeModelSpec`, `LanesSpec` |
+| Unit tests on virtual time | exact timing of deadlines and delays | `FerrySpec`, `PerKeySpec`, `FoldWriteSpec` |
+| Model-based tests | batches and dispatch instants agree with an independent executable model, step by step | `FerryModelSpec`, `LanesSpec` |
 | Seeded simulations | random workloads, failures, interruptions and shutdown; every trace checked against the contract | `Simulation`, `PerKeySimulation`, `FencedWriterSimulation` |
-| Stress tests on the real scheduler | interleavings that virtual time never picks | `BulkDikeStressSpec`, `PerKeyStressSpec` |
-| TLA+ model checking | every interleaving of the protocol, in a small instance, for safety and liveness | [`formal/`](https://github.com/EtaCassiopeia/bulkdike/tree/main/formal) |
+| Stress tests on the real scheduler | interleavings that virtual time never picks | `FerryStressSpec`, `PerKeyStressSpec` |
+| TLA+ model checking | every interleaving of the protocol, in a small instance, for safety and liveness | [`formal/`](https://github.com/EtaCassiopeia/zio-ferry/tree/main/formal) |
 
 ## What the simulations check
 
@@ -42,7 +42,7 @@ counterexample proves the mechanism is needed, and that the model can notice its
 
 | Model | Checks | Variants that must fail |
 |---|---|---|
-| `BulkDike.tla` | no input sent twice, turned-away inputs never sent, one assembler, bounded batches, one owner per input, nobody stranded on close; every admitted caller is answered | `UnserialisedAdmission`, `NoCleanupOnInterrupt`, `NonAtomicTake`: a caller is stranded |
+| `Ferry.tla` | no input sent twice, turned-away inputs never sent, one assembler, bounded batches, one owner per input, nobody stranded on close; every admitted caller is answered | `UnserialisedAdmission`, `NoCleanupOnInterrupt`, `NonAtomicTake`: a caller is stranded |
 | `PerKey.tla` (`PerKey`, `PerKeyBatchOnly`) | all of the above per key, plus one call in flight per key (direct calls included) and rank order; every caller answered, every direct caller done | `PerKeyUnsorted`: out of rank order. `PerKeyNoBusyGuard`, `PerKeyNoDirectGuard`, `PerKeyNoAwaitCall`: two calls in flight for one key. `PerKeyNonAtomicTake`, `PerKeyNonAtomicAdmission`: a caller is stranded |
 | `FencedWriter.tla` | across processes with arbitrary routing, crashes and lost answers: no input applied twice, every answer true | `FencedWriterUnfenced`, `FencedWriterNoDedup`: an input is applied twice |
 
@@ -52,11 +52,11 @@ CI runs every configuration on every change, and fails if a passing model fails 
 
 ```sh
 sbt testFull                                  # every test; sbt 2's `test` is incremental
-BULKDIKE_SAMPLES=2000 sbt testFull            # search longer, e.g. before a release
+FERRY_SAMPLES=2000 sbt testFull            # search longer, e.g. before a release
 formal/check.sh path/to/tla2tools.jar         # TLC, every model and variant
 ```
 
-`BULKDIKE_TEST_TIMEOUT_SECONDS` sets the per-test time limit, so a change that makes callers hang fails fast.
+`FERRY_TEST_TIMEOUT_SECONDS` sets the per-test time limit, so a change that makes callers hang fails fast.
 
 ## Limits
 

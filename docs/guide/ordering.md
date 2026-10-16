@@ -7,7 +7,7 @@ first. Inputs also arrive out of that order, with some latency.
 An `Order` ranks each input. A key's waiting inputs are sent in ascending rank, ties in arrival order:
 
 ```scala
-BulkDike.perKey(config, key = (e: Event) => e.entity, order = Order.by((e: Event) => e.at))(call)(extract)
+Ferry.perKey(config, key = (e: Event) => e.entity, order = Order.by((e: Event) => e.at))(call)(extract)
 ```
 
 | Order | Ranks by | Use it when |

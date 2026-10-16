@@ -8,7 +8,7 @@ inThisBuild(
     organization       := "io.github.etacassiopeia",
     scalaVersion       := scalaLts,
     crossScalaVersions := Seq(scalaLts, scalaNext),
-    homepage           := Some(uri("https://github.com/EtaCassiopeia/bulkdike")),
+    homepage           := Some(uri("https://github.com/EtaCassiopeia/zio-ferry")),
     licenses           := List("Apache-2.0" -> uri("https://www.apache.org/licenses/LICENSE-2.0")),
     developers         := List(
       Developer("EtaCassiopeia", "EtaCassiopeia", "zainalpour@gmail.com", uri("https://github.com/EtaCassiopeia"))
@@ -20,14 +20,14 @@ lazy val root = project
   .in(file("."))
   .aggregate(core, examples)
   .settings(
-    name           := "bulkdike-root",
+    name           := "zio-ferry-root",
     publish / skip := true
   )
 
 lazy val core = project
   .in(file("core"))
   .settings(
-    name := "bulkdike",
+    name := "zio-ferry",
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio"          % zioVersion,
       "dev.zio" %% "zio-test"     % zioVersion % Test,
@@ -36,8 +36,8 @@ lazy val core = project
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     // The API reference published with the documentation site
     Compile / doc / scalacOptions ++= Seq(
-      "-social-links:github::https://github.com/EtaCassiopeia/bulkdike",
-      "-source-links:github://EtaCassiopeia/bulkdike/main",
+      "-social-links:github::https://github.com/EtaCassiopeia/zio-ferry",
+      "-source-links:github://EtaCassiopeia/zio-ferry/main",
       "-sourceroot",
       (ThisBuild / baseDirectory).value.getAbsolutePath
     )
@@ -47,7 +47,7 @@ lazy val examples = project
   .in(file("examples"))
   .dependsOn(core)
   .settings(
-    name                               := "bulkdike-examples",
+    name                               := "zio-ferry-examples",
     publish / skip                     := true,
     libraryDependencies += "nl.vroste" %% "rezilience" % rezilienceVersion
   )

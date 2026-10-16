@@ -13,7 +13,7 @@ actually run out:
 
 ## Decision
 
-`BulkDike.perKey` takes an optional `weigh: I => Long` (defaulting to 1 per input), and `PerKeyConfig` two bounds:
+`Ferry.perKey` takes an optional `weigh: I => Long` (defaulting to 1 per input), and `PerKeyConfig` two bounds:
 
 - **`maxBatchWeight`**: a batch is dispatched once its inputs reach this weight and never carries more. A single input
   heavier than the limit travels alone rather than never: a batch always has at least one input, and the downstream
@@ -30,5 +30,5 @@ Both default to unbounded, so weights cost nothing unless used. Validation requi
   To keep that overhead small, inputs should be references to large payloads (an identifier or a storage locator),
   not the payloads themselves.
 - An input's weight is computed once, at admission, and must not change while it waits.
-- `BulkDike.make` does not take weights. Its users have not needed them, and adding them there would change its
+- `Ferry.make` does not take weights. Its users have not needed them, and adding them there would change its
   configuration for everyone; it can follow if a use case appears.

@@ -7,12 +7,12 @@ Every caller gets exactly one of these. None is left waiting.
 | Outcome | When | What to do |
 |---|---|---|
 | Its result `A` | The batch call succeeded. With per-input outcomes, `A` may itself be a rejection of this input on its merits. | Use it. A rejection on the merits is not worth retrying. |
-| `BulkDikeError.Rejected` | The waiting room was full (`maxQueueing`, or `maxQueuedWeight` for `perKey`). Nothing was sent. | Retry after a backoff, or shed the load. |
-| `BulkDikeError.Failed(e)` | The batch call carrying the input failed with `e`. Every caller in that batch gets it. | Retry if the call is idempotent, which a [fenced write](fold-write.md) is. |
+| `FerryError.Rejected` | The waiting room was full (`maxQueueing`, or `maxQueuedWeight` for `perKey`). Nothing was sent. | Retry after a backoff, or shed the load. |
+| `FerryError.Failed(e)` | The batch call carrying the input failed with `e`. Every caller in that batch gets it. | Retry if the call is idempotent, which a [fenced write](fold-write.md) is. |
 | A defect | The batch call died, or `extract` threw for this caller. | Fix the bug. |
-| Interruption | The dike's scope closed while the caller waited, or the caller called after it closed. | The process is shutting down. |
+| Interruption | The ferry's scope closed while the caller waited, or the caller called after it closed. | The process is shutting down. |
 
-Later calls are still served after a failed batch. One failure never poisons the dike.
+Later calls are still served after a failed batch. One failure never poisons the ferry.
 
 ## Interrupting a caller
 
@@ -24,18 +24,18 @@ Later calls are still served after a failed batch. One failure never poisons the
 
 ## Closing the scope
 
-A dike lives in the `Scope` it was created in. When the scope closes:
+A ferry lives in the `Scope` it was created in. When the scope closes:
 
 1. the workers are interrupted, and every caller whose batch they held is interrupted;
 2. admission stops, and every input still waiting is released by interrupting its caller;
 3. calls made afterwards are interrupted.
 
 Admission and close are one atomic step, so no input can slip into a waiting room that has already been drained.
-Direct calls run in the dike's scope too, and are interrupted with it.
+Direct calls run in the ferry's scope too, and are interrupted with it.
 
 ## Guidance for clients
 
-BulkDike holds waiting inputs only in memory. A crash loses what was waiting, which is safe as long as:
+Ferry holds waiting inputs only in memory. A crash loses what was waiting, which is safe as long as:
 
 - **nothing is acknowledged before it is durable.** A caller is answered only once the batch call returned;
 - **clients retry** on `Failed`, `Rejected`, interruption and their own timeouts, with the same input id and content;

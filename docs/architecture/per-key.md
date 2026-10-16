@@ -1,10 +1,10 @@
-# `BulkDike.perKey`: lanes in one transactional value
+# `Ferry.perKey`: lanes in one transactional value
 
 `perKey` splits into a pure core and an effectful shell:
 
 - **`Lanes`** is an immutable value holding the whole waiting room. Every scheduling decision (admit, claim, take,
   release, drain) is a pure function from one `Lanes` to the next.
-- **`PerKeyDike`** keeps that value in one `TRef`, applies each transition in one STM transaction, and runs the calls:
+- **`PerKeyFerry`** keeps that value in one `TRef`, applies each transition in one STM transaction, and runs the calls:
   workers for batches, and callers themselves for direct calls.
 
 The design is recorded in [0003](../decisions/0003-per-key-batching.md),
@@ -56,7 +56,7 @@ starve the others.
 
 `apply` first computes the key, rank and weight, outside any transaction. Then one transaction does all of this:
 
-1. If the dike is closed, the caller is interrupted.
+1. If the ferry is closed, the caller is interrupted.
 2. Else, if direct calls are on, the delay is zero and the key has no lane, the key is **claimed**: a busy lane with no
    items is created, and the caller sends its input itself.
 3. Else, if the waiting room has room by count and weight, the item is **admitted** into its key's lane, in rank order.
@@ -89,7 +89,7 @@ admission wakes every idle worker; with a handful of workers this is cheap, and 
 
 A caller that claimed its key:
 
-1. forks the call into the dike's scope, so closing the scope interrupts it like any batch in flight;
+1. forks the call into the ferry's scope, so closing the scope interrupts it like any batch in flight;
 2. waits for the call, and interrupts it if the caller is interrupted;
 3. releases the key **only once the call is over**, whether it succeeded, failed or was interrupted.
 
@@ -98,7 +98,7 @@ shows this: without it, a key has two calls in flight.
 
 ## Close
 
-The scope's finalizers interrupt the workers first. Then one transaction marks the dike closed and drains every lane,
+The scope's finalizers interrupt the workers first. Then one transaction marks the ferry closed and drains every lane,
 and every drained caller is interrupted. Lanes with a call in flight stay busy until that call is released.
 
 ## Why one `TRef`
@@ -106,5 +106,5 @@ and every drained caller is interrupted. Lanes with a call in flight stay busy u
 Admission must be atomic with the closed check, and taking a batch must be atomic with marking its key busy. With all
 state in one value, both are single transactions, which rules out by construction the races
 [`make`](single-queue.md) guards with a lock and an uninterruptible region. The cost is that every caller contends on
-one `TRef`. If a measurement ever shows that to limit throughput, several dikes over shares of the keys spread it
-without changing any guarantee ([Scaling beyond one dike](../guide/configuration.md#scaling-beyond-one-dike)).
+one `TRef`. If a measurement ever shows that to limit throughput, several ferries over shares of the keys spread it
+without changing any guarantee ([Scaling beyond one ferry](../guide/configuration.md#scaling-beyond-one-ferry)).

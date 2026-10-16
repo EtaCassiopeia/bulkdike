@@ -1,4 +1,4 @@
-package bulkdike
+package ferry
 
 import zio.*
 
@@ -12,66 +12,65 @@ import zio.*
  *
  * Every caller receives its own share of the batch result, or the batch call's failure.
  */
-trait BulkDike[-I, +E, +A]:
+trait Ferry[-I, +E, +A]:
 
   /**
    * Submits `input` for inclusion in the next batch and waits for its result.
    *
-   * Fails with [[BulkDikeError.Rejected]] when the queue is full, or with [[BulkDikeError.Failed]] when the batch call
+   * Fails with [[FerryError.Rejected]] when the queue is full, or with [[FerryError.Failed]] when the batch call
    * carrying `input` fails. A defect in the batch call is propagated as a defect. Interrupting the caller before its
-   * batch is dispatched removes `input` from the batch. Calls made after the BulkDike's scope has closed are
-   * interrupted.
+   * batch is dispatched removes `input` from the batch. Calls made after the Ferry's scope has closed are interrupted.
    */
-  def apply(input: I): IO[BulkDikeError[E], A]
+  def apply(input: I): IO[FerryError[E], A]
 
   /** Current load, for monitoring. */
-  def metrics: UIO[BulkDike.Metrics]
+  def metrics: UIO[Ferry.Metrics]
 
-object BulkDike:
+object Ferry:
 
   /**
    * @param queued
    *   Inputs waiting in the queue. Inputs already taken into the batch being assembled are not counted.
    * @param inFlightBatches
-   *   Batch calls currently running, including a `perKey` dike's direct calls for idle keys.
+   *   Batch calls currently running, including a `perKey` ferry's direct calls for idle keys.
    */
   final case class Metrics(queued: Int, inFlightBatches: Int)
 
   /**
-   * Creates a BulkDike whose lifetime is bound to the enclosing `Scope`.
+   * Creates a Ferry whose lifetime is bound to the enclosing `Scope`.
    *
    * @param call
    *   The batch call. It receives the inputs in submission order, including duplicates.
    * @param extract
    *   Picks one caller's result out of the batch result. If it throws, that caller gets the exception as a defect.
    */
-  def make[R, E, I, B, A](config: BulkDikeConfig)(call: NonEmptyChunk[I] => ZIO[R, E, B])(
+  def make[R, E, I, B, A](config: FerryConfig)(call: NonEmptyChunk[I] => ZIO[R, E, B])(
     extract: (I, B) => A
-  ): URIO[R & Scope, BulkDike[I, E, A]] =
+  ): URIO[R & Scope, Ferry[I, E, A]] =
     for
       queue     <- Queue.dropping[Entry[I, E, A]](config.maxQueueing)
       doorbell  <- Queue.sliding[Unit](1)
       accepting <- Ref.Synchronized.make(true)
       inFlight  <- Ref.make(0)
       forming   <- Semaphore.make(1)
-      dike = Live(config, call, extract, queue, doorbell, accepting, inFlight, forming)
+      ferry = Live(config, call, extract, queue, doorbell, accepting, inFlight, forming)
       // Finalizers run in reverse order: workers are interrupted first, then whatever is still queued is released.
-      _ <- ZIO.addFinalizer(dike.close)
-      _ <- ZIO.foreachDiscard(1 to config.maxInFlightBatches)(_ => dike.worker.forkScoped)
-    yield dike
+      _ <- ZIO.addFinalizer(ferry.close)
+      _ <- ZIO.foreachDiscard(1 to config.maxInFlightBatches)(_ => ferry.worker.forkScoped)
+    yield ferry
 
   /**
-   * Creates a BulkDike for the common case of a batch call answering with one result per distinct input.
+   * Creates a Ferry for the common case of a batch call answering with one result per distinct input.
    *
    * The batch call receives each distinct input once. A caller whose input is absent from the returned map gets `None`.
    */
-  def keyed[R, E, I, A](config: BulkDikeConfig)(
+  def keyed[R, E, I, A](config: FerryConfig)(
     call: NonEmptyChunk[I] => ZIO[R, E, Map[I, A]]
-  ): URIO[R & Scope, BulkDike[I, E, Option[A]]] =
+  ): URIO[R & Scope, Ferry[I, E, Option[A]]] =
     make(config)((inputs: NonEmptyChunk[I]) => call(distinct(inputs)))((input, results) => results.get(input))
 
   /**
-   * Creates a BulkDike that batches each key's inputs separately, and keeps each key's batches in order.
+   * Creates a Ferry that batches each key's inputs separately, and keeps each key's batches in order.
    *
    * Inputs with the same `key` are dispatched in `order` (by default, submission order), in batches of that key only,
    * and a key never has more than one batch in flight: its next batch is dispatched only once the previous one has
@@ -111,19 +110,19 @@ object BulkDike:
     order: Order[I] = Order.arrival
   )(
     call: (K, NonEmptyChunk[I]) => ZIO[R, E, B]
-  )(extract: (I, B) => A): URIO[R & Scope, BulkDike[I, E, A]] =
-    PerKeyDike.make(config, key, weigh, order)(call)(extract)
+  )(extract: (I, B) => A): URIO[R & Scope, Ferry[I, E, A]] =
+    PerKeyFerry.make(config, key, weigh, order)(call)(extract)
 
   private def distinct[I](inputs: NonEmptyChunk[I]): NonEmptyChunk[I] =
     NonEmptyChunk.fromIterable(inputs.head, inputs.tail.distinct.filterNot(_ == inputs.head))
 
-  final private case class Entry[I, E, A](input: I, result: Promise[BulkDikeError[E], A], submittedAt: Long)
+  final private case class Entry[I, E, A](input: I, result: Promise[FerryError[E], A], submittedAt: Long)
 
   private enum Admission:
     case Admitted, QueueFull, Closed
 
   final private class Live[R, E, I, B, A](
-    config: BulkDikeConfig,
+    config: FerryConfig,
     call: NonEmptyChunk[I] => ZIO[R, E, B],
     extract: (I, B) => A,
     queue: Queue[Entry[I, E, A]],
@@ -131,12 +130,12 @@ object BulkDike:
     accepting: Ref.Synchronized[Boolean],
     inFlight: Ref[Int],
     forming: Semaphore
-  ) extends BulkDike[I, E, A]:
+  ) extends Ferry[I, E, A]:
 
-    override def apply(input: I): IO[BulkDikeError[E], A] =
+    override def apply(input: I): IO[FerryError[E], A] =
       ZIO.uninterruptibleMask { restore =>
         for
-          result      <- Promise.make[BulkDikeError[E], A]
+          result      <- Promise.make[FerryError[E], A]
           submittedAt <- Clock.nanoTime
           _           <- enqueue(Entry(input, result, submittedAt))
           a           <- restore(result.await).onInterrupt(result.interrupt)
@@ -147,7 +146,7 @@ object BulkDike:
       queue.size.zipWith(inFlight.get)(Metrics(_, _))
 
     // Admission is serialised with `close` so nothing can enter the queue after it has been drained.
-    private def enqueue(entry: Entry[I, E, A]): IO[BulkDikeError[E], Unit] =
+    private def enqueue(entry: Entry[I, E, A]): IO[FerryError[E], Unit] =
       accepting
         .modifyZIO { isAccepting =>
           if isAccepting then
@@ -156,7 +155,7 @@ object BulkDike:
         }
         .flatMap {
           case Admission.Admitted  => doorbell.offer(()).unit
-          case Admission.QueueFull => ZIO.fail(BulkDikeError.Rejected)
+          case Admission.QueueFull => ZIO.fail(FerryError.Rejected)
           case Admission.Closed    => ZIO.interrupt
         }
 
@@ -212,7 +211,7 @@ object BulkDike:
               case Exit.Success(b) =>
                 ZIO.foreachDiscard(entries)(entry => entry.result.complete(ZIO.succeed(extract(entry.input, b))))
               case Exit.Failure(cause) =>
-                ZIO.foreachDiscard(entries)(_.result.failCause(cause.map(BulkDikeError.Failed(_))))
+                ZIO.foreachDiscard(entries)(_.result.failCause(cause.map(FerryError.Failed(_))))
             }
           }
       }

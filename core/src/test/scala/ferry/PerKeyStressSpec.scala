@@ -1,10 +1,10 @@
-package bulkdike
+package ferry
 
 import zio.*
 import zio.test.*
 
 /**
- * Runs `BulkDike.perKey` on the live clock and the real multi-threaded scheduler, where interleavings are not under the
+ * Runs `Ferry.perKey` on the live clock and the real multi-threaded scheduler, where interleavings are not under the
  * test's control, and repeats each run to shake out races that a deterministic simulation cannot reach.
  */
 object PerKeyStressSpec extends ZIOSpecDefault:
@@ -33,7 +33,7 @@ object PerKeyStressSpec extends ZIOSpecDefault:
       case _                       => true
     }.unit
 
-  def spec = suite("BulkDike.perKey under real concurrency")(
+  def spec = suite("Ferry.perKey under real concurrency")(
     test("keeps each key to one batch in flight, in submission order, and accounts for every call") {
       check(configs) { cfgOrError =>
         for
@@ -47,7 +47,7 @@ object PerKeyStressSpec extends ZIOSpecDefault:
           caller  <- FiberRef.make(false) // set by callers, so a call made by one rather than a worker is told apart
           exits   <- ZIO.scoped {
             for
-              dike <- BulkDike.perKey(cfg, (_: Int) % keys, (id: Int) => (id % 5 + 1).toLong) {
+              ferry <- Ferry.perKey(cfg, (_: Int) % keys, (id: Int) => (id % 5 + 1).toLong) {
                 (key, ids: NonEmptyChunk[Int]) =>
                   // Only workers' batches count against maxInFlightBatches.
                   def enter(byCaller: Boolean) =
@@ -69,7 +69,7 @@ object PerKeyStressSpec extends ZIOSpecDefault:
               calls <- ZIO
                 .foreachPar(0 until keys) { key =>
                   ZIO.foreach((0 until 1200).filter(_ % keys == key))(id =>
-                    caller.locally(true)(dike(id)).fork.tap(admitted).map(id -> _)
+                    caller.locally(true)(ferry(id)).fork.tap(admitted).map(id -> _)
                   )
                 }
                 .map(_.flatten.sortBy(_._1).map(_._2))
@@ -88,7 +88,7 @@ object PerKeyStressSpec extends ZIOSpecDefault:
             case (Exit.Success(v), id) if v != -id || batchOf.get(id).forall(failing) => id
             case (exit, id) if Simulation.isRejected(exit) && batchOf.contains(id)    => id
             case (Exit.Failure(c), id)
-                if c.failureOption.exists(_.isInstanceOf[BulkDikeError.Failed[?]]) &&
+                if c.failureOption.exists(_.isInstanceOf[FerryError.Failed[?]]) &&
                   !batchOf.get(id).exists(failing) =>
               id
             case (Exit.Failure(c), id) if c.isInterruptedOnly && id % 5 != 0 => id
@@ -115,11 +115,11 @@ object PerKeyStressSpec extends ZIOSpecDefault:
         cfg   <- ZIO.fromEither(PerKeyConfig.make(4, 2, 16)).orDie
         calls <- ZIO.scoped {
           for
-            dike <- BulkDike.perKey(cfg, (_: Int) % 3)((_, ids: NonEmptyChunk[Int]) => ZIO.sleep(1.milli).as(ids.size))(
+            ferry <- Ferry.perKey(cfg, (_: Int) % 3)((_, ids: NonEmptyChunk[Int]) => ZIO.sleep(1.milli).as(ids.size))(
               (_, n) => n
             )
             calls <- ZIO.foreach(0 until 200) { id =>
-              (Random.nextIntBounded(4).flatMap(ms => ZIO.sleep(ms.millis)) *> dike(id)).fork
+              (Random.nextIntBounded(4).flatMap(ms => ZIO.sleep(ms.millis)) *> ferry(id)).fork
             }
             _ <- Random.nextIntBounded(4).flatMap(ms => ZIO.sleep(ms.millis))
           yield calls
@@ -129,7 +129,7 @@ object PerKeyStressSpec extends ZIOSpecDefault:
         exits.isDefined,
         exits.toList.flatten.forall {
           case Exit.Success(n)     => n >= 1 && n <= 4
-          case Exit.Failure(cause) => cause.isInterruptedOnly || cause.failureOption.contains(BulkDikeError.Rejected)
+          case Exit.Failure(cause) => cause.isInterruptedOnly || cause.failureOption.contains(FerryError.Rejected)
         }
       )
     } @@ Effort.repeats(100)

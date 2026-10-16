@@ -1,9 +1,9 @@
-package bulkdike
+package ferry
 
 import zio.Duration
 
 /**
- * Validated settings for a [[BulkDike.perKey]]. Construct with [[PerKeyConfig.make]].
+ * Validated settings for a [[Ferry.perKey]]. Construct with [[PerKeyConfig.make]].
  *
  * @param maxBatchSize
  *   A key's batch is dispatched as soon as it holds this many inputs.
@@ -20,10 +20,10 @@ import zio.Duration
  *   Maximum number of batch calls running concurrently, across all keys. Each key has at most one. Direct calls for
  *   idle keys are not counted.
  * @param maxQueueing
- *   Maximum number of inputs waiting, across all keys. Further inputs are rejected with [[BulkDikeError.Rejected]].
+ *   Maximum number of inputs waiting, across all keys. Further inputs are rejected with [[FerryError.Rejected]].
  * @param maxQueuedWeight
  *   Maximum total weight of the inputs waiting, across all keys. Further inputs are rejected with
- *   [[BulkDikeError.Rejected]]. With weights in bytes, this bounds the memory held by waiting inputs.
+ *   [[FerryError.Rejected]]. With weights in bytes, this bounds the memory held by waiting inputs.
  * @param directIdleKeys
  *   Whether, with a zero `maxBatchDelay`, an idle key's input is sent at once by its own caller (the default), or by a
  *   worker like any batch. Turn it off when the downstream needs a hard bound on concurrent calls: direct calls are not

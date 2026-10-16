@@ -1,15 +1,15 @@
-package bulkdike
+package ferry
 
 import zio.*
 import zio.test.*
 
 /**
- * Generates random workloads and runs them against a real BulkDike on the TestClock.
+ * Generates random workloads and runs them against a real Ferry on the TestClock.
  *
  * `TestClock.adjust` waits until every fiber of the test is suspended before it advances, and fires sleeps in timestamp
  * order, so virtual time acts as a deterministic scheduler: what is concurrent is only what happens at the same
  * instant. The resulting [[Simulation.Trace]] records everything observable, and [[Simulation.violations]] checks it
- * against BulkDike's contract.
+ * against Ferry's contract.
  */
 object Simulation:
 
@@ -35,8 +35,8 @@ object Simulation:
     behaviours: NonEmptyChunk[Behaviour],
     closeAfter: Option[Int]
   ):
-    def config: UIO[BulkDikeConfig] =
-      ZIO.fromEither(BulkDikeConfig.make(maxBatchSize, maxBatchDelayMs.millis, maxInFlightBatches, maxQueueing)).orDie
+    def config: UIO[FerryConfig] =
+      ZIO.fromEither(FerryConfig.make(maxBatchSize, maxBatchDelayMs.millis, maxInFlightBatches, maxQueueing)).orDie
 
     def behaviourOf(batchIndex: Int): Behaviour = behaviours(batchIndex % behaviours.size)
 
@@ -48,7 +48,7 @@ object Simulation:
 
   final case class Trace(
     batches: Chunk[Batch],
-    outcomes: Map[Int, Exit[BulkDikeError[String], Int]],
+    outcomes: Map[Int, Exit[FerryError[String], Int]],
     submittedAt: Map[Int, Long],
     cancelledAt: Map[Int, Long],
     peakInFlight: Int,
@@ -97,7 +97,7 @@ object Simulation:
       closeAfter
     )
 
-  private type Caller = Fiber.Runtime[BulkDikeError[String], Int]
+  private type Caller = Fiber.Runtime[FerryError[String], Int]
 
   def run(s: Scenario): UIO[Trace] =
     for
@@ -128,12 +128,12 @@ object Simulation:
           }
         yield result
 
-      submit = (dike: BulkDike[Int, String, Int], sub: Submission, id: Int) =>
+      submit = (ferry: Ferry[Int, String, Int], sub: Submission, id: Int) =>
         for
           _      <- TestClock.adjust(sub.gapMs.millis).when(sub.gapMs > 0)
           now    <- Clock.nanoTime
           _      <- submitted.update(_ + (id -> now))
-          caller <- dike(id).fork
+          caller <- ferry(id).fork
           _      <- callers.update(_ + (id -> caller))
           _      <- ZIO.foreachDiscard(sub.cancelAfterMs) { ms =>
             (ZIO.sleep(ms.millis) *> caller.interrupt.flatMap { exit =>
@@ -144,15 +144,15 @@ object Simulation:
 
       (before, after) = s.closeAfter.fold((s.submissions, Chunk.empty[Submission]))(s.submissions.splitAt)
 
-      dike <- ZIO.scoped {
+      ferry <- ZIO.scoped {
         for
-          dike <- BulkDike.make(cfg)(call)((id, results: Map[Int, Int]) => results(id))
-          _    <- ZIO.foreachDiscard(before.zipWithIndex)((sub, id) => submit(dike, sub, id))
-          _    <- settleBounded(callers).when(s.closeAfter.isEmpty)
-        yield dike
+          ferry <- Ferry.make(cfg)(call)((id, results: Map[Int, Int]) => results(id))
+          _     <- ZIO.foreachDiscard(before.zipWithIndex)((sub, id) => submit(ferry, sub, id))
+          _     <- settleBounded(callers).when(s.closeAfter.isEmpty)
+        yield ferry
       }
       _ <- closed.set(true)
-      _ <- ZIO.foreachDiscard(after.zipWithIndex)((sub, i) => submit(dike, sub, before.size + i))
+      _ <- ZIO.foreachDiscard(after.zipWithIndex)((sub, i) => submit(ferry, sub, before.size + i))
       _ <- settleBounded(callers)
 
       finished <- callers.get.flatMap(cs => ZIO.foreach(cs.toList)((id, f) => f.poll.map(id -> _)))
@@ -181,17 +181,17 @@ object Simulation:
       .repeat(Schedule.recurUntil[Boolean](identity) && Schedule.recurs(360))
       .unit
 
-  def isRejected(exit: Exit[BulkDikeError[?], ?]): Boolean =
-    exit.causeOption.flatMap(_.failureOption).contains(BulkDikeError.Rejected)
+  def isRejected(exit: Exit[FerryError[?], ?]): Boolean =
+    exit.causeOption.flatMap(_.failureOption).contains(FerryError.Rejected)
 
-  /** Every way in which `trace` breaks BulkDike's contract for scenario `s`; empty when it is honoured. */
+  /** Every way in which `trace` breaks Ferry's contract for scenario `s`; empty when it is honoured. */
   def violations(s: Scenario, t: Trace): List[String] =
     val batchOf       = t.batches.flatMap(b => b.ids.map(_ -> b)).toMap
     val sentTwice     = t.batches.flatMap(_.ids).groupBy(identity).collect { case (id, n) if n.size > 1 => id }
     val maxDelayNanos = s.maxBatchDelayMs.millis.toNanos
     val closing       = s.closeAfter.isDefined
 
-    def outcome(id: Int, exit: Exit[BulkDikeError[String], Int]): Option[String] =
+    def outcome(id: Int, exit: Exit[FerryError[String], Int]): Option[String] =
       val batch = batchOf.get(id)
       exit match
         case Exit.Success(v) =>
@@ -202,9 +202,9 @@ object Simulation:
           Option.when(!closing && !t.cancelledAt.contains(id))(s"caller $id was interrupted but nobody interrupted it")
         case Exit.Failure(cause) =>
           (cause.failureOption, cause.dieOption) match
-            case (Some(BulkDikeError.Rejected), _) =>
+            case (Some(FerryError.Rejected), _) =>
               batch.map(b => s"caller $id was rejected but its input was sent in batch ${b.index}")
-            case (Some(BulkDikeError.Failed(e)), _) =>
+            case (Some(FerryError.Failed(e)), _) =>
               Option.when(!batch.exists(b => b.behaviour.isInstanceOf[Behaviour.Fail] && e == s"batch-${b.index}"))(
                 s"caller $id failed with $e but its batch was $batch"
               )

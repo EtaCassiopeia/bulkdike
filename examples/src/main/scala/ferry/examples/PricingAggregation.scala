@@ -1,14 +1,14 @@
-package bulkdike.examples
+package ferry.examples
 
-import bulkdike.{BulkDike, BulkDikeConfig, BulkDikeError}
+import ferry.{Ferry, FerryConfig, FerryError}
 import nl.vroste.rezilience.{CircuitBreaker, Retry, Timeout}
 import zio.*
 
 /**
  * Many concurrent requests each need the price for one country. The upstream pricing API accepts many countries per
- * call, so BulkDike coalesces the requests into a few upstream calls, and rezilience protects each of those calls.
+ * call, so Ferry coalesces the requests into a few upstream calls, and rezilience protects each of those calls.
  *
- * Run with: `examples/runMain bulkdike.examples.PricingAggregation`
+ * Run with: `examples/runMain ferry.examples.PricingAggregation`
  */
 object PricingAggregation extends ZIOAppDefault:
 
@@ -35,10 +35,10 @@ object PricingAggregation extends ZIOAppDefault:
         retry   <- Retry.make(min = 10.millis, max = 100.millis, maxRetries = Some(2))
         breaker <- CircuitBreaker.withMaxFailures[Any](maxFailures = 5)
         config  <- ZIO.fromEither(
-          BulkDikeConfig.make(maxBatchSize = 5, maxBatchDelay = 20.millis, maxInFlightBatches = 2, maxQueueing = 50)
+          FerryConfig.make(maxBatchSize = 5, maxBatchDelay = 20.millis, maxInFlightBatches = 2, maxQueueing = 50)
         )
         // Policies wrap the batch call, so a retry or a timeout covers every caller in the batch at once.
-        prices <- BulkDike.keyed(config)((countries: NonEmptyChunk[String]) =>
+        prices <- Ferry.keyed(config)((countries: NonEmptyChunk[String]) =>
           breaker(retry(timeout(api.fetch(countries))))
         )
         // --8<-- [end:resilience]
@@ -52,5 +52,5 @@ object PricingAggregation extends ZIOAppDefault:
       yield ()
     }
 
-  private def describe(error: BulkDikeError[Any]): String =
+  private def describe(error: FerryError[Any]): String =
     error.fold("rejected: too many requests waiting", cause => s"upstream failed: $cause")

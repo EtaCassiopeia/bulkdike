@@ -20,16 +20,16 @@ The design follows from a few rules. Each is recorded, with its reasons, in the 
 ```mermaid
 flowchart TB
   subgraph api [Public API]
-    BD["BulkDike[I, E, A]<br/>apply(input), metrics"]
-    CFG["BulkDikeConfig / PerKeyConfig<br/>validated settings"]
+    BD["Ferry[I, E, A]<br/>apply(input), metrics"]
+    CFG["FerryConfig / PerKeyConfig<br/>validated settings"]
     ORD["Order[I]<br/>rank of an input"]
     FW["FoldWrite<br/>read, apply, conditional write"]
-    ERR["BulkDikeError<br/>Rejected | Failed(e)"]
+    ERR["FerryError<br/>Rejected | Failed(e)"]
   end
-  subgraph make ["BulkDike.make / keyed"]
+  subgraph make ["Ferry.make / keyed"]
     Q[bounded queue] --> W1["workers, one per slot<br/>(one assembles at a time)"]
   end
-  subgraph perkey ["BulkDike.perKey"]
+  subgraph perkey ["Ferry.perKey"]
     L["Lanes: one pure value in a TRef<br/>lane per key, ready line, deadlines"] --> W2[workers, one per slot]
     L --> DC[direct calls for idle keys]
   end
@@ -41,10 +41,10 @@ flowchart TB
 
 | Source | Role |
 |---|---|
-| `BulkDike.scala` | The public trait, the three constructors, and the implementation of `make` |
-| `BulkDikeConfig.scala`, `PerKeyConfig.scala` | Validated settings |
-| `BulkDikeError.scala` | The error type callers see |
-| `PerKeyDike.scala` | `perKey`'s effectful shell: admission, workers, direct calls, close |
+| `Ferry.scala` | The public trait, the three constructors, and the implementation of `make` |
+| `FerryConfig.scala`, `PerKeyConfig.scala` | Validated settings |
+| `FerryError.scala` | The error type callers see |
+| `PerKeyFerry.scala` | `perKey`'s effectful shell: admission, workers, direct calls, close |
 | `Lanes.scala` | `perKey`'s pure waiting room: every scheduling decision |
 | `Order.scala` | Pluggable dispatch order |
 | `FoldWrite.scala` | The read, apply, conditional-write batch call |
@@ -62,7 +62,7 @@ guarantees, so neither is a configuration of the other.
 | When a batch leaves | full, or `maxBatchDelay` after its oldest input | full, or when the key's previous call completes (zero delay), or `maxBatchDelay` after its oldest input |
 | Synchronisation | queue, lock and semaphore | STM transactions over one value |
 | Bounds | count | count and weight |
-| Formal model | `formal/BulkDike.tla` | `formal/PerKey.tla` |
+| Formal model | `formal/Ferry.tla` | `formal/PerKey.tla` |
 
 ## Beyond one process
 
