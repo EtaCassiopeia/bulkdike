@@ -12,11 +12,13 @@ import zio.Duration
  *   single input that is heavier on its own: it travels alone. Use it to stay under a per-request byte limit
  *   downstream.
  * @param maxBatchDelay
- *   How long a partial batch may wait for more inputs after its oldest input was submitted. The default, zero, sends
- *   whatever is waiting as soon as the key's previous batch completes: under load batches then grow by themselves, at
- *   no added latency.
+ *   How long a partial batch may wait for more inputs after its oldest input was submitted. The default, zero, sends an
+ *   idle key's input at once, directly from its caller, and whatever is waiting as soon as the key's previous call
+ *   completes: under load batches then grow by themselves, at no added latency. A positive delay batches every input,
+ *   even an idle key's.
  * @param maxInFlightBatches
- *   Maximum number of batch calls running concurrently, across all keys. Each key has at most one.
+ *   Maximum number of batch calls running concurrently, across all keys. Each key has at most one. Direct calls for
+ *   idle keys are not counted.
  * @param maxQueueing
  *   Maximum number of inputs waiting, across all keys. Further inputs are rejected with [[BulkDikeError.Rejected]].
  * @param maxQueuedWeight

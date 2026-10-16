@@ -83,7 +83,7 @@ object PerKeySpec extends ZIOSpecDefault:
       test("runs batches of different keys concurrently, up to maxInFlightBatches") {
         for
           down    <- downstream
-          cfg     <- config(maxBatchSize = 1, maxInFlightBatches = 2)
+          cfg     <- config(maxBatchSize = 1, maxInFlightBatches = 2, maxBatchDelay = 1.milli) // no direct calls
           d       <- dike(cfg, down, held = Set("a", "b", "c"))
           callers <- ZIO.foreach(List("a", "b", "c"))(k => d(k -> 0).fork)
           _       <- metricsReach(d)(m => m.inFlightBatches == 2 && m.queued == 1)
@@ -118,6 +118,41 @@ object PerKeySpec extends ZIOSpecDefault:
           _       <- ZIO.foreach(callers ++ heavier)(_.join)
           sent    <- down.batches.get
         yield assertTrue(first == Chunk("k" -> Chunk(4, 6)), sent == Chunk("k" -> Chunk(4, 6), "k" -> Chunk(12)))
+      },
+      test("sends an idle key's input at once from its caller, even while busy keys fill every batch slot") {
+        for
+          gates <- ZIO.foreach(List(1, 2))(n => Promise.make[Nothing, Unit].map(n -> _)).map(_.toMap)
+          calls <- Ref.make(Chunk.empty[Chunk[Int]])
+          cfg   <- config(maxBatchSize = 10, maxInFlightBatches = 1)
+          d     <- BulkDike.perKey(cfg, (_: (String, Int))._1) { (_, inputs: NonEmptyChunk[(String, Int)]) =>
+            val ns = inputs.map(_._2).toChunk
+            calls.update(_ :+ ns) *> ZIO.foreachDiscard(gates.collect { case (n, g) if ns.contains(n) => g })(_.await)
+          }((i, _) => i._2)
+          first   <- d("hot" -> 1).fork                 // idle: sent directly, and held
+          _       <- calls.get.repeatUntil(_.size == 1)
+          batched <- submitInOrder(d, "hot" -> 2, "hot" -> 3)
+          _       <- gates(1).succeed(())
+          _       <- calls.get.repeatUntil(_.size == 2) // the only batch slot now carries (2, 3), held
+          waiting <- submitInOrder(d, "hot" -> 4)
+          cold    <- d("cold" -> 5)                     // neither waits for a slot nor queues behind "hot"
+          _       <- gates(2).succeed(())
+          _       <- ZIO.foreach(first +: (batched ++ waiting))(_.join)
+          sent    <- calls.get
+        yield assertTrue(cold == 5, sent == Chunk(Chunk(1), Chunk(2, 3), Chunk(5), Chunk(4)))
+      },
+      test("interrupts a direct call when its caller is interrupted, and frees the key") {
+        for
+          calls <- Ref.make(Chunk.empty[Int])
+          cfg   <- config()
+          d     <- BulkDike.perKey(cfg, (_: Int) => "k") { (_, inputs: NonEmptyChunk[Int]) =>
+            calls.update(_ ++ inputs) *> ZIO.never.when(inputs.head == 1)
+          }((n, _) => n)
+          stuck <- d(1).fork
+          _     <- calls.get.repeatUntil(_.nonEmpty)
+          _     <- stuck.interrupt
+          later <- d(2)
+          sent  <- calls.get
+        yield assertTrue(later == 2, sent == Chunk(1, 2))
       },
       test("lets each input succeed or fail on its own when the batch call reports outcomes per input") {
         for

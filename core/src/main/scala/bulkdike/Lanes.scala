@@ -8,10 +8,11 @@ import zio.{Chunk, NonEmptyChunk}
  * The waiting room behind [[BulkDike.perKey]]: one lane per key, as a pure value so that every transition can be tested
  * on its own and checked against the TLA+ model in `formal/PerKey.tla`.
  *
- * A key has a lane while it has items waiting or a batch in flight. A lane is in exactly one state:
+ * A key has a lane while it has items waiting or a call in flight. A lane is in exactly one state:
  *   - `Waiting(deadline)`: holds a partial batch whose oldest item is not yet due;
  *   - `Ready`: in line to be taken, because it is full or due;
- *   - `Busy`: its batch is in flight. Items for it keep accumulating, but it is never taken again until released.
+ *   - `Busy`: its batch, or an input claimed by its caller, is in flight. Items for it keep accumulating, but it is
+ *     never taken again until released.
  *
  * Ready lanes are served first come, first served. A lane that still holds items when its batch completes joins the
  * back of the line, so a key that is always busy cannot starve the others.
@@ -26,6 +27,15 @@ final private[bulkdike] case class Lanes[K, X](
   busy: Int
 ):
   import Lanes.*
+
+  /**
+   * Marks `key` busy for an input its caller sends on its own, without a worker; `None` unless the key is idle (no
+   * lane) and batches are not delayed. Inputs for the key that arrive meanwhile wait in its lane, as behind any batch.
+   */
+  def claim(key: K): Option[Lanes[K, X]] =
+    Option.when(limits.maxBatchDelayNanos == 0 && !lanes.contains(key))(
+      copy(lanes = lanes.updated(key, Lane(Queue.empty[Item[X]], 0L, Status.Busy)), busy = busy + 1)
+    )
 
   /** Adds `item` to the lane of `key`, or returns `None` if that would exceed the count or weight bound. */
   def admit(key: K, item: Item[X]): Option[Lanes[K, X]] =

@@ -8,12 +8,13 @@ import zio.test.*
 import bulkdike.Lanes.*
 
 /**
- * Drives the pure lane structure behind `BulkDike.perKey` through random sequences of admissions, takes and releases,
- * and checks every step against a simple model: one FIFO of waiting items per key, and the set of busy keys.
+ * Drives the pure lane structure behind `BulkDike.perKey` through random sequences of claims, admissions, takes and
+ * releases, and checks every step against a simple model: one FIFO of waiting items per key, and the set of busy keys.
  */
 object LanesSpec extends ZIOSpecDefault:
 
   enum Op:
+    case Claim(key: Int)
     case Admit(key: Int, weight: Long, elapse: Long)
     case Next(elapse: Long)
     case Release(pick: Int)
@@ -29,6 +30,7 @@ object LanesSpec extends ZIOSpecDefault:
     yield Limits(size, batchWeight, delay, queueing, queued)
 
   private val op: Gen[Any, Op] = Gen.oneOf(
+    Gen.int(0, 3).map(Op.Claim(_)),
     (Gen.int(0, 3) <*> Gen.long(0, 5) <*> Gen.long(0, 1)).map(Op.Admit(_, _, _)),
     Gen.long(0, 2).map(Op.Next(_)),
     Gen.int(0, 3).map(Op.Release(_)),
@@ -58,6 +60,13 @@ object LanesSpec extends ZIOSpecDefault:
 
   private def step(l: Limits, lanes: Lanes[Int, Int], m: Model, op: Op): (Lanes[Int, Int], Model, List[String]) =
     op match
+      case Op.Claim(key) =>
+        val idle = l.maxBatchDelayNanos == 0 && !m.waiting.contains(key) && !m.busy(key)
+        lanes.claim(key) match
+          case Some(claimed) =>
+            (claimed, m.copy(busy = m.busy + key), Option.unless(idle)(s"$op claimed a key that is not idle").toList)
+          case None => (lanes, m, Option.when(idle)(s"$op refused an idle key").toList)
+
       case Op.Admit(key, weight, elapse) =>
         val now  = m.now + elapse
         val item = Item(m.serial, weight, now)
@@ -184,6 +193,17 @@ object LanesSpec extends ZIOSpecDefault:
         .admit("k", Item(2, 1, 0))
         .get
       assertTrue(takeAll(lanes, now = 0) == List("k" -> List(1), "k" -> List(2)))
+    },
+    test("claims only an idle key, and batches what arrives for it until it is released") {
+      val claimed = Lanes.empty[String, Int](limitsOf(size = 10)).claim("k").get
+      val more    = (1 to 3).foldLeft(claimed)((l, n) => l.admit("k", Item(n, 1, 0)).get)
+      assertTrue(
+        claimed.claim("k").isEmpty,
+        more.next(0).isLeft,
+        takeAll(more.release("k"), now = 0) == List("k" -> List(1, 2, 3)),
+        more.release("k").claim("k").isEmpty, // still has inputs waiting
+        Lanes.empty[String, Int](limitsOf(size = 10, delay = 1)).claim("k").isEmpty
+      )
     },
     test("keeps a key's later inputs back while its batch is in flight, and sends them together afterwards") {
       val first            = Lanes.empty[String, Int](limitsOf(size = 10)).admit("k", Item(1, 1, 0)).get

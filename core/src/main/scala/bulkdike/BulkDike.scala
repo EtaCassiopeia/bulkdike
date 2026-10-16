@@ -33,7 +33,7 @@ object BulkDike:
    * @param queued
    *   Inputs waiting in the queue. Inputs already taken into the batch being assembled are not counted.
    * @param inFlightBatches
-   *   Batch calls currently running.
+   *   Batch calls currently running, including a `perKey` dike's direct calls for idle keys.
    */
   final case class Metrics(queued: Int, inFlightBatches: Int)
 
@@ -77,6 +77,13 @@ object BulkDike:
    * more than one batch in flight: its next batch is dispatched only once the previous one has completed. Different
    * keys are batched independently and run concurrently, up to `maxInFlightBatches` in total. Keys with work waiting
    * take turns, so a key that always has more never starves the others.
+   *
+   * Only keys that are busy are batched. With the default `maxBatchDelay` of zero, an input for an idle key (nothing
+   * waiting, nothing in flight) is sent at once by its own caller, as a batch of one, without queueing or waiting for a
+   * worker: occasional traffic pays no batching cost and never waits behind busy keys. Inputs that arrive for the key
+   * while that call is in flight are batched behind it, so a key switches to batching exactly when it has concurrent
+   * work, and back when it is idle again. These direct calls are not counted against `maxInFlightBatches`, which bounds
+   * the batches of busy keys; at most one runs per idle key.
    *
    * This suits writes that must be applied in order per entity, such as appends to a per-entity log guarded by a
    * conditional write: one writer per entity removes write contention, and each round trip carries everything that
