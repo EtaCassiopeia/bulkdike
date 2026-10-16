@@ -70,6 +70,35 @@ object BulkDike:
   ): URIO[R & Scope, BulkDike[I, E, Option[A]]] =
     make(config)((inputs: NonEmptyChunk[I]) => call(distinct(inputs)))((input, results) => results.get(input))
 
+  /**
+   * Creates a BulkDike that batches each key's inputs separately, and keeps each key's batches in order.
+   *
+   * Inputs with the same `key` are dispatched in submission order, in batches of that key only, and a key never has
+   * more than one batch in flight: its next batch is dispatched only once the previous one has completed. Different
+   * keys are batched independently and run concurrently, up to `maxInFlightBatches` in total. Keys with work waiting
+   * take turns, so a key that always has more never starves the others.
+   *
+   * This suits writes that must be applied in order per entity, such as appends to a per-entity log guarded by a
+   * conditional write: one writer per entity removes write contention, and each round trip carries everything that
+   * arrived while the previous one was in flight.
+   *
+   * To report outcomes per input, let `call` answer with one outcome per input and fail only when the whole batch did
+   * not happen. An input rejected on its own merits then affects only its own caller.
+   *
+   * @param key
+   *   The entity an input belongs to.
+   * @param weigh
+   *   The weight of an input, such as its size in bytes, for `maxBatchWeight` and `maxQueuedWeight`. Defaults to 1.
+   * @param call
+   *   The batch call, given the key and that key's inputs in submission order.
+   * @param extract
+   *   Picks one caller's result out of the batch result. If it throws, that caller gets the exception as a defect.
+   */
+  def perKey[R, E, K, I, B, A](config: PerKeyConfig, key: I => K, weigh: I => Long = (_: Any) => 1L)(
+    call: (K, NonEmptyChunk[I]) => ZIO[R, E, B]
+  )(extract: (I, B) => A): URIO[R & Scope, BulkDike[I, E, A]] =
+    PerKeyDike.make(config, key, weigh)(call)(extract)
+
   private def distinct[I](inputs: NonEmptyChunk[I]): NonEmptyChunk[I] =
     NonEmptyChunk.fromIterable(inputs.head, inputs.tail.distinct.filterNot(_ == inputs.head))
 
