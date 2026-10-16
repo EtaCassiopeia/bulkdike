@@ -50,7 +50,7 @@ final private[bulkdike] case class Lanes[K, X](
       case None              => Left(promoted.waiting.headOption.map(_._1))
       case Some((key, rest)) =>
         val lane                       = promoted.lanes(key)
-        val (batch, remaining, weight) = lane.take(limits)
+        val (batch, remaining, weight) = lane.oldestBatch(limits)
         Right(
           (
             key,
@@ -131,7 +131,7 @@ object Lanes:
       items.size >= limits.maxBatchSize || weight >= limits.maxBatchWeight
 
     /** The oldest items that fit in one batch: always at least one, even if it alone exceeds the weight limit. */
-    def take(limits: Limits): (NonEmptyChunk[Item[X]], Queue[Item[X]], Long) =
+    def oldestBatch(limits: Limits): (NonEmptyChunk[Item[X]], Queue[Item[X]], Long) =
       val (first, rest) = items.dequeue
       @annotation.tailrec
       def loop(

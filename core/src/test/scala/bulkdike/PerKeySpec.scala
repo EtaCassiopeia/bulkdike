@@ -112,10 +112,12 @@ object PerKeySpec extends ZIOSpecDefault:
           down    <- downstream
           cfg     <- config(maxBatchSize = 10, maxBatchDelay = 1.hour, maxBatchWeight = 10)
           d       <- BulkDike.perKey(cfg, (_: (String, Int))._1, _._2.toLong)(down.call(Set.empty))((i, _) => i._2)
-          callers <- submitInOrder(d, "k" -> 4, "k" -> 6, "k" -> 12)
-          _       <- ZIO.foreach(callers)(_.join)
+          callers <- submitInOrder(d, "k" -> 4, "k" -> 6) // exactly maxBatchWeight: full, so no waiting for the delay
+          first   <- down.batches.get.repeatUntil(_.nonEmpty)
+          heavier <- submitInOrder(d, "k" -> 12)
+          _       <- ZIO.foreach(callers ++ heavier)(_.join)
           sent    <- down.batches.get
-        yield assertTrue(sent == Chunk("k" -> Chunk(4, 6), "k" -> Chunk(12)))
+        yield assertTrue(first == Chunk("k" -> Chunk(4, 6)), sent == Chunk("k" -> Chunk(4, 6), "k" -> Chunk(12)))
       },
       test("lets each input succeed or fail on its own when the batch call reports outcomes per input") {
         for
@@ -213,6 +215,15 @@ object PerKeySpec extends ZIOSpecDefault:
           cfg.maxBatchWeight == Long.MaxValue,
           cfg.maxQueuedWeight == Long.MaxValue
         )
+      },
+      test("accepts a configuration exactly when every constraint holds") {
+        check(Gen.int(0, 3), Gen.int(0, 2), Gen.int(0, 4), Gen.long(-1, 1), Gen.long(0, 3), Gen.long(0, 4)) {
+          (size, inFlight, queueing, delayMs, batchWeight, queuedWeight) =>
+            val valid = size >= 1 && inFlight >= 1 && queueing >= size && delayMs >= 0 && batchWeight >= 1 &&
+              queuedWeight >= batchWeight
+            val made = PerKeyConfig.make(size, inFlight, queueing, delayMs.millis, batchWeight, queuedWeight)
+            assertTrue(made.isRight == valid)
+        }
       },
       test("reports every problem at once, naming each setting") {
         val problems = PerKeyConfig.make(0, 0, -1, (-1).second, 0, -1).left.toOption.toList.flatMap(_.problems)
