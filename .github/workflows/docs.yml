@@ -33,7 +33,7 @@ jobs:
       - run: pip install -r requirements-docs.txt
       # Snippets are included from the examples, so compile them before publishing them
       - name: Compile the examples and build the API reference
-        run: sbt examples/compile core/doc
+        run: sbt "examples/compile; core/doc"
       - name: Build the site
         run: |
           mkdocs build
