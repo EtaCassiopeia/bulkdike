@@ -8,7 +8,7 @@ import zio.*
  * Many concurrent requests each need the price for one country. The upstream pricing API accepts many countries per
  * call, so BulkDike coalesces the requests into a few upstream calls, and rezilience protects each of those calls.
  *
- * Run with: `examples/run`
+ * Run with: `examples/runMain bulkdike.examples.PricingAggregation`
  */
 object PricingAggregation extends ZIOAppDefault:
 
