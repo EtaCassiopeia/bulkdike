@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Model-checks the BulkDike protocol with TLC.
-#   BulkDike.cfg                - the protocol as implemented: must pass (safety and liveness).
-#   UnserialisedAdmission.cfg   - without the admission lock: must FAIL, proving the lock is needed.
-#   NoCleanupOnInterrupt.cfg    - without worker cleanup: must FAIL, proving the cleanup is needed.
-#   NonAtomicTake.cfg           - take and record as separate steps: must FAIL, proving the atomicity is needed.
+# Model-checks the BulkDike protocols with TLC. Each spec has one configuration that must pass, and weakened
+# variants that must FAIL: each variant removes one mechanism, and its failure proves that mechanism is needed.
+#
+#   BulkDike.tla      BulkDike.make: one queue, a forming lock, interruptible workers (safety and liveness)
+#     UnserialisedAdmission, NoCleanupOnInterrupt, NonAtomicTake      -> a caller is stranded
+#   PerKey.tla        BulkDike.perKey: per-key lanes, one batch in flight per key (safety and liveness)
+#     PerKeyNoBusyGuard   -> a key has two batches in flight
+#     PerKeyNonAtomicTake, PerKeyNonAtomicAdmission -> a caller is stranded
+#   FencedWriter.tla  the single-writer-per-key deployment pattern, against a store with conditional appends
+#     FencedWriterUnfenced, FencedWriterNoDedup                         -> a command is applied twice
+#
 # Usage: formal/check.sh [path/to/tla2tools.jar]   (defaults to $TLA2TOOLS or ./tla2tools.jar)
 set -euo pipefail
 
@@ -12,20 +18,31 @@ JAR="${1:-${TLA2TOOLS:-tla2tools.jar}}"
 META="$(mktemp -d)"
 trap 'rm -rf "$META" ./*_TTrace_*.tla ./*_TTrace_*.bin' EXIT
 
-tlc() {
-  java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -workers auto -deadlock -metadir "$META/$1" -config "$1.cfg" BulkDike.tla
+tlc() { # spec config
+  java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -workers auto -deadlock -metadir "$META/$2" -config "$2.cfg" "$1.tla"
 }
 
-echo "== BulkDike (expected: no error)"
-tlc BulkDike | tail -n 4
+passes() { # spec config
+  echo "== $2 (expected: no error)"
+  tlc "$1" "$2" | tail -n 4
+}
 
-for variant in UnserialisedAdmission NoCleanupOnInterrupt NonAtomicTake; do
-  echo "== $variant (expected: NoneStrandedAfterClose violated)"
-  if out="$(tlc "$variant")"; then
+fails() { # spec config
+  echo "== $2 (expected: Safety violated)"
+  if out="$(tlc "$1" "$2")"; then
     echo "$out" | tail -n 4
-    echo "FAIL: $variant was expected to violate an invariant but passed" >&2
+    echo "FAIL: $2 was expected to violate an invariant but passed" >&2
     exit 1
   fi
   echo "$out" | grep -q "Invariant Safety is violated" || { echo "$out" | tail -n 20; exit 1; }
   echo "violated, as expected"
-done
+}
+
+passes BulkDike BulkDike
+for variant in UnserialisedAdmission NoCleanupOnInterrupt NonAtomicTake; do fails BulkDike "$variant"; done
+
+passes PerKey PerKey
+for variant in PerKeyNoBusyGuard PerKeyNonAtomicTake PerKeyNonAtomicAdmission; do fails PerKey "$variant"; done
+
+passes FencedWriter FencedWriter
+for variant in FencedWriterUnfenced FencedWriterNoDedup; do fails FencedWriter "$variant"; done

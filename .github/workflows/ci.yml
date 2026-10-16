@@ -34,7 +34,10 @@ jobs:
           distribution: 'temurin'
           cache: sbt
       - uses: sbt/setup-sbt@v1
-      - run: sbt "++${{ matrix.scala-version }} test" "++${{ matrix.scala-version }} examples/run"
+      - run: >-
+          sbt "++${{ matrix.scala-version }} test"
+          "++${{ matrix.scala-version }} examples/runMain bulkdike.examples.PricingAggregation"
+          "++${{ matrix.scala-version }} examples/runMain bulkdike.examples.OrderedWrites"
 
   formal:
     runs-on: ubuntu-latest
