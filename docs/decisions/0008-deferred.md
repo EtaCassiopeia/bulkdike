@@ -6,15 +6,15 @@ Each of these was considered and left out for now. Each names what would bring i
 
 ## Built-in sharding
 
-Several independent dikes, each owning `hash(key) % n` of the keys, would spread contention on the single `TRef` of
+Several independent ferries, each owning `hash(key) % n` of the keys, would spread contention on the single `TRef` of
 [0003](0003-per-key-batching.md). Every per-key guarantee is local to a key, so applications can already do this
 themselves without loss. **Revisit when** a benchmark shows STM retries on the lanes `TRef` limiting throughput.
 
-## Lock-free admission for `BulkDike.make`
+## Lock-free admission for `Ferry.make`
 
 Admission there is serialised with close by a `Ref.Synchronized`. A counter of admissions in progress plus a closed flag
 would avoid the lock, but it is exactly the mechanism the formal model shows to be load-bearing, so a replacement must
-be modelled first. `BulkDike.perKey` already admits through an STM transaction. **Revisit when** profiling shows the lock
+be modelled first. `Ferry.perKey` already admits through an STM transaction. **Revisit when** profiling shows the lock
 on a hot path.
 
 ## Benchmarks (JMH)
@@ -31,7 +31,7 @@ varies enough that a static `maxInFlightBatches` is either wasteful or overloads
 
 ## Larger model checking
 
-- *Symmetry reduction* in TLC is unsound for liveness properties, which the `BulkDike` and `PerKey` configurations check.
+- *Symmetry reduction* in TLC is unsound for liveness properties, which the `Ferry` and `PerKey` configurations check.
   It could be added to safety-only configurations to check more callers.
 - *Simulation mode* (`tlc -simulate`) explores long random behaviours of larger instances.
 - *Apalache with an inductive invariant* would prove safety for any number of callers and keys, not just small

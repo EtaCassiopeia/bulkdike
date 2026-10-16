@@ -1,4 +1,4 @@
-# `BulkDike.make`: one queue, one batch assembled at a time
+# `Ferry.make`: one queue, one batch assembled at a time
 
 `make` (and `keyed`, which is built on it) batches one undifferentiated stream. Its design is recorded in
 [0001](../decisions/0001-single-queue-batcher.md).
@@ -63,5 +63,5 @@ It releases `forming` before running the batch, so the next batch can form while
 - On close, `accepting` is set to false under the lock, then the queue is drained and every entry's caller is
   interrupted. Workers are interrupted first, since finalizers run in reverse order.
 
-`formal/BulkDike.tla` models these steps. Its weakened variants show each one is needed: without serialised admission,
+`formal/Ferry.tla` models these steps. Its weakened variants show each one is needed: without serialised admission,
 cleanup on interrupt, or the atomic take, a caller is stranded. See [Verification](../verification.md).

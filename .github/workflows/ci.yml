@@ -36,8 +36,8 @@ jobs:
       - uses: sbt/setup-sbt@v1
       - run: >-
           sbt "++${{ matrix.scala-version }} test"
-          "++${{ matrix.scala-version }} examples/runMain bulkdike.examples.PricingAggregation"
-          "++${{ matrix.scala-version }} examples/runMain bulkdike.examples.OrderedWrites"
+          "++${{ matrix.scala-version }} examples/runMain ferry.examples.PricingAggregation"
+          "++${{ matrix.scala-version }} examples/runMain ferry.examples.OrderedWrites"
 
   formal:
     runs-on: ubuntu-latest

@@ -3,7 +3,7 @@
 Both configurations are built by a `make` that returns `Either[InvalidConfig, _]`, listing every invalid setting at
 once.
 
-## `BulkDikeConfig` (for `make` and `keyed`)
+## `FerryConfig` (for `make` and `keyed`)
 
 | Setting | Meaning | Constraint |
 |---|---|---|
@@ -47,7 +47,7 @@ Start with the defaults: zero delay, direct calls on. Then:
 
 ## Monitoring
 
-`dike.metrics` reports the current load:
+`ferry.metrics` reports the current load:
 
 - `queued`: inputs waiting;
 - `inFlightBatches`: batch calls running, including `perKey`'s direct calls.
@@ -59,10 +59,10 @@ Start with the defaults: zero delay, direct calls on. Then:
 With dispatch on completion, batch size depends on load. The **fill ratio**, batch size over `maxBatchSize`,
 measured in your batch call, shows how busy a key is. A ratio near one means the key is saturated.
 
-## Scaling beyond one dike
+## Scaling beyond one ferry
 
-All of a `perKey` dike's state is one value updated by STM transactions, which every caller contends on. If that ever
-limits throughput, run several dikes, each owning a share of the keys. Every per-key guarantee is local to a key, so
+All of a `perKey` ferry's state is one value updated by STM transactions, which every caller contends on. If that ever
+limits throughput, run several ferries, each owning a share of the keys. Every per-key guarantee is local to a key, so
 nothing is lost:
 
 ```scala

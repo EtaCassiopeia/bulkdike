@@ -1,6 +1,6 @@
-package bulkdike.examples
+package ferry.examples
 
-import bulkdike.{BulkDike, BulkDikeError, FoldWrite, Order, PerKeyConfig}
+import ferry.{Ferry, FerryError, FoldWrite, Order, PerKeyConfig}
 import zio.*
 
 /**
@@ -8,12 +8,12 @@ import zio.*
  * order, and a round trip to the store costs about the same whether it carries one entry or twenty, so a busy entity is
  * limited by round trips, not by entries.
  *
- * `BulkDike.perKey` makes this process the only writer of each entity: the entries of an entity that arrive while its
+ * `Ferry.perKey` makes this process the only writer of each entity: the entries of an entity that arrive while its
  * previous write is in flight travel together in the next one, and different entities are written in parallel. Entries
  * carry an effective day, and those that wait together are written in effective-day order. The write itself is fenced
  * and idempotent (see `docs/decisions/0005-fenced-single-writer.md`), so retrying it is safe.
  *
- * Run with: `examples/runMain bulkdike.examples.OrderedWrites`
+ * Run with: `examples/runMain ferry.examples.OrderedWrites`
  */
 object OrderedWrites extends ZIOAppDefault:
 
@@ -79,7 +79,7 @@ object OrderedWrites extends ZIOAppDefault:
           PerKeyConfig.make(maxBatchSize = 25, maxInFlightBatches = 8, maxQueueing = 1000, maxBatchWeight = 2000)
         )
         fold = write(store)
-        writer <- BulkDike.perKey(
+        writer <- Ferry.perKey(
           config,
           (_: Entry).entity,
           (e: Entry) => 40L + e.id.length,
@@ -106,5 +106,5 @@ object OrderedWrites extends ZIOAppDefault:
       yield ()
     }
 
-  private def describe(error: BulkDikeError[StoreError]): String =
+  private def describe(error: FerryError[StoreError]): String =
     error.fold("rejected: too many entries waiting", cause => s"store failed: $cause")

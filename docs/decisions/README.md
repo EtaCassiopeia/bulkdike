@@ -18,3 +18,4 @@ mark them superseded; a changed decision gets a new record. Proposals not yet de
 | [0010](0010-direct-calls-for-idle-keys.md) | Send an idle key's input directly; batch only keys with concurrent work | Accepted |
 | [0011](0011-pluggable-dispatch-order.md) | A key's waiting inputs are sent in a pluggable order                    | Accepted |
 | [0012](0012-fold-write-helper.md)       | Package "read once, apply, conditional write" as `FoldWrite`             | Accepted |
+| [0013](0013-rename-to-ferry.md)        | Rename BulkDike to Ferry                                                 | Accepted |

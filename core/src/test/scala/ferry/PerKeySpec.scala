@@ -1,4 +1,4 @@
-package bulkdike
+package ferry
 
 import zio.*
 import zio.test.*
@@ -37,8 +37,8 @@ object PerKeySpec extends ZIOSpecDefault:
   private val downstream =
     Ref.make(Chunk.empty[(String, Chunk[Int])]).zipWith(Promise.make[Nothing, Unit])(Downstream(_, _))
 
-  private def dike(cfg: PerKeyConfig, down: Downstream, held: Set[String] = Set.empty) =
-    BulkDike.perKey(cfg, (_: (String, Int))._1)(down.call(held))((input, _) => input._2)
+  private def ferry(cfg: PerKeyConfig, down: Downstream, held: Set[String] = Set.empty) =
+    Ferry.perKey(cfg, (_: (String, Int))._1)(down.call(held))((input, _) => input._2)
 
   /** Waits until `fiber` is parked awaiting its result, or already done: either way, its input was admitted. */
   private def suspended(fiber: Fiber.Runtime[?, ?]): UIO[Unit] =
@@ -47,20 +47,20 @@ object PerKeySpec extends ZIOSpecDefault:
       case _                       => true
     }.unit
 
-  private def metricsReach(dike: BulkDike[?, ?, ?])(p: BulkDike.Metrics => Boolean): UIO[Unit] =
-    dike.metrics.repeatUntil(p).unit
+  private def metricsReach(ferry: Ferry[?, ?, ?])(p: Ferry.Metrics => Boolean): UIO[Unit] =
+    ferry.metrics.repeatUntil(p).unit
 
   /** Submits each input from its own fiber, one after the other, so that submission order is well defined. */
-  private def submitInOrder[A](d: BulkDike[(String, Int), Nothing, A], inputs: (String, Int)*) =
+  private def submitInOrder[A](d: Ferry[(String, Int), Nothing, A], inputs: (String, Int)*) =
     ZIO.foreach(inputs)(input => d(input).fork.tap(suspended))
 
-  def spec = suite("BulkDike.perKey")(
+  def spec = suite("Ferry.perKey")(
     suite("batching")(
       test("batches each key separately, in submission order") {
         for
           down    <- downstream
           cfg     <- config(maxBatchSize = 3, maxBatchDelay = 1.second)
-          d       <- dike(cfg, down)
+          d       <- ferry(cfg, down)
           callers <- submitInOrder(d, "a" -> 1, "b" -> 2, "a" -> 3, "b" -> 4, "a" -> 5)
           batches <- down.batches.get.repeatUntil(_.nonEmpty) // the "a" batch is full; "b" waits for its delay
           _       <- TestClock.adjust(1.second)
@@ -76,7 +76,7 @@ object PerKeySpec extends ZIOSpecDefault:
         for
           down  <- downstream
           cfg   <- config(maxBatchSize = 10, maxInFlightBatches = 4)
-          d     <- dike(cfg, down, held = Set("k"))
+          d     <- ferry(cfg, down, held = Set("k"))
           first <- d("k" -> 1).fork
           _     <- metricsReach(d)(_.inFlightBatches == 1)
           rest  <- submitInOrder(d, "k" -> 2, "k" -> 3, "k" -> 4)
@@ -85,7 +85,7 @@ object PerKeySpec extends ZIOSpecDefault:
           _     <- ZIO.foreach(first +: rest)(_.join)
           sent  <- down.batches.get
         yield assertTrue(
-          held == BulkDike.Metrics(queued = 3, inFlightBatches = 1),
+          held == Ferry.Metrics(queued = 3, inFlightBatches = 1),
           sent == Chunk("k" -> Chunk(1), "k" -> Chunk(2, 3, 4))
         )
       },
@@ -93,7 +93,7 @@ object PerKeySpec extends ZIOSpecDefault:
         for
           down    <- downstream
           cfg     <- config(maxBatchSize = 1, maxInFlightBatches = 2, maxBatchDelay = 1.milli) // no direct calls
-          d       <- dike(cfg, down, held = Set("a", "b", "c"))
+          d       <- ferry(cfg, down, held = Set("a", "b", "c"))
           callers <- ZIO.foreach(List("a", "b", "c"))(k => d(k -> 0).fork)
           _       <- metricsReach(d)(m => m.inFlightBatches == 2 && m.queued == 1)
           _       <- down.gate.succeed(())
@@ -105,7 +105,7 @@ object PerKeySpec extends ZIOSpecDefault:
         for
           down  <- downstream
           cfg   <- config(maxBatchSize = 5, maxBatchDelay = 5.seconds)
-          d     <- dike(cfg, down)
+          d     <- ferry(cfg, down)
           first <- d("k" -> 1).fork
           _     <- TestClock.adjust(4.seconds)
           late  <- d("k" -> 2).fork
@@ -120,7 +120,7 @@ object PerKeySpec extends ZIOSpecDefault:
         for
           down    <- downstream
           cfg     <- config(maxBatchSize = 10, maxBatchDelay = 1.hour, maxBatchWeight = 10)
-          d       <- BulkDike.perKey(cfg, (_: (String, Int))._1, _._2.toLong)(down.call(Set.empty))((i, _) => i._2)
+          d       <- Ferry.perKey(cfg, (_: (String, Int))._1, _._2.toLong)(down.call(Set.empty))((i, _) => i._2)
           callers <- submitInOrder(d, "k" -> 4, "k" -> 6) // exactly maxBatchWeight: full, so no waiting for the delay
           first   <- down.batches.get.repeatUntil(_.nonEmpty)
           heavier <- submitInOrder(d, "k" -> 12)
@@ -133,7 +133,7 @@ object PerKeySpec extends ZIOSpecDefault:
           gates <- ZIO.foreach(List(1, 2))(n => Promise.make[Nothing, Unit].map(n -> _)).map(_.toMap)
           calls <- Ref.make(Chunk.empty[Chunk[Int]])
           cfg   <- config(maxBatchSize = 10, maxInFlightBatches = 1)
-          d     <- BulkDike.perKey(cfg, (_: (String, Int))._1) { (_, inputs: NonEmptyChunk[(String, Int)]) =>
+          d     <- Ferry.perKey(cfg, (_: (String, Int))._1) { (_, inputs: NonEmptyChunk[(String, Int)]) =>
             val ns = inputs.map(_._2).toChunk
             calls.update(_ :+ ns) *> ZIO.foreachDiscard(gates.collect { case (n, g) if ns.contains(n) => g })(_.await)
           }((i, _) => i._2)
@@ -153,7 +153,7 @@ object PerKeySpec extends ZIOSpecDefault:
         for
           down  <- downstream
           cfg   <- config(maxInFlightBatches = 1, directIdleKeys = false)
-          d     <- dike(cfg, down, held = Set("a"))
+          d     <- ferry(cfg, down, held = Set("a"))
           a     <- d("a" -> 1).fork
           _     <- metricsReach(d)(_.inFlightBatches == 1)
           b     <- d("b" -> 2).fork
@@ -161,14 +161,14 @@ object PerKeySpec extends ZIOSpecDefault:
           waits <- d.metrics
           _     <- down.gate.succeed(())
           _     <- a.join *> b.join
-        yield assertTrue(waits == BulkDike.Metrics(queued = 1, inFlightBatches = 1))
+        yield assertTrue(waits == Ferry.Metrics(queued = 1, inFlightBatches = 1))
       },
       test("sends each key's waiting inputs in `order`, ties in submission order") {
         for
           down <- downstream
           cfg  <- config(maxBatchSize = 10, maxBatchDelay = 1.second)
           byRest = Order.by((input: (String, Int)) => (input._2 % 3).toLong)
-          d       <- BulkDike.perKey(cfg, (_: (String, Int))._1, order = byRest)(down.call(Set.empty))((i, _) => i._2)
+          d       <- Ferry.perKey(cfg, (_: (String, Int))._1, order = byRest)(down.call(Set.empty))((i, _) => i._2)
           callers <- submitInOrder(d, "k" -> 1, "k" -> 2, "k" -> 3, "k" -> 4, "k" -> 5)
           _       <- TestClock.adjust(1.second)
           _       <- ZIO.foreach(callers)(_.join)
@@ -179,7 +179,7 @@ object PerKeySpec extends ZIOSpecDefault:
         for
           calls <- Ref.make(Chunk.empty[Int])
           cfg   <- config()
-          d     <- BulkDike.perKey(cfg, (_: Int) => "k") { (_, inputs: NonEmptyChunk[Int]) =>
+          d     <- Ferry.perKey(cfg, (_: Int) => "k") { (_, inputs: NonEmptyChunk[Int]) =>
             calls.update(_ ++ inputs) *> ZIO.never.when(inputs.head == 1)
           }((n, _) => n)
           stuck <- d(1).fork
@@ -192,7 +192,7 @@ object PerKeySpec extends ZIOSpecDefault:
       test("lets each input succeed or fail on its own when the batch call reports outcomes per input") {
         for
           cfg <- config(maxBatchSize = 3)
-          d   <- BulkDike.perKey(cfg, (_: Int) => "k") { (_, inputs: NonEmptyChunk[Int]) =>
+          d   <- Ferry.perKey(cfg, (_: Int) => "k") { (_, inputs: NonEmptyChunk[Int]) =>
             ZIO.succeed(inputs.map(n => n -> Either.cond(n > 0, n * 10, s"$n is not positive")).toMap)
           }((n, outcomes) => outcomes(n))
           results <- ZIO.foreachPar(List(1, -2, 3))(d(_))
@@ -210,7 +210,7 @@ object PerKeySpec extends ZIOSpecDefault:
             maxBatchWeight = 5,
             maxQueuedWeight = 5
           )
-          d        <- BulkDike.perKey(cfg, (_: (String, Int))._1, _._2.toLong)(down.call(Set("k")))((i, _) => i._2)
+          d        <- Ferry.perKey(cfg, (_: (String, Int))._1, _._2.toLong)(down.call(Set("k")))((i, _) => i._2)
           running  <- d("k" -> 1).fork
           _        <- metricsReach(d)(_.inFlightBatches == 1)
           queued   <- submitInOrder(d, "k" -> 3)
@@ -219,20 +219,20 @@ object PerKeySpec extends ZIOSpecDefault:
           tooMany  <- d("k" -> 0).exit // two are already waiting
           _        <- down.gate.succeed(())
           _        <- running.join *> ZIO.foreach(queued ++ lighter)(_.join)
-        yield assert(tooHeavy)(fails(equalTo(BulkDikeError.Rejected))) &&
-          assert(tooMany)(fails(equalTo(BulkDikeError.Rejected)))
+        yield assert(tooHeavy)(fails(equalTo(FerryError.Rejected))) &&
+          assert(tooMany)(fails(equalTo(FerryError.Rejected)))
       }
     ),
     suite("failures")(
       test("fails only the callers of the failed batch, and keeps serving the key afterwards") {
         for
           cfg <- config(maxBatchSize = 2)
-          d   <- BulkDike.perKey(cfg, (_: (String, Int))._1) { (_, inputs: NonEmptyChunk[(String, Int)]) =>
+          d   <- Ferry.perKey(cfg, (_: (String, Int))._1) { (_, inputs: NonEmptyChunk[(String, Int)]) =>
             ZIO.fail("unavailable").when(inputs.exists(_._2 <= 2))
           }((i, _) => i._2)
           failed <- ZIO.foreachPar(List("a" -> 1, "a" -> 2))(d(_).exit)
           others <- ZIO.foreachPar(List("b" -> 3, "a" -> 4))(d(_))
-        yield assert(failed)(forall(fails(equalTo(BulkDikeError.Failed("unavailable"))))) &&
+        yield assert(failed)(forall(fails(equalTo(FerryError.Failed("unavailable"))))) &&
           assertTrue(others == List(3, 4))
       },
       test("releases a key whose batch call died, so its later inputs are still served") {
@@ -240,7 +240,7 @@ object PerKeySpec extends ZIOSpecDefault:
         for
           calls <- Ref.make(0)
           cfg   <- config(maxBatchSize = 1)
-          d     <- BulkDike.perKey(cfg, (_: Int) => "k") { (_, _: NonEmptyChunk[Int]) =>
+          d     <- Ferry.perKey(cfg, (_: Int) => "k") { (_, _: NonEmptyChunk[Int]) =>
             calls.getAndUpdate(_ + 1).flatMap(n => ZIO.die(boom).when(n == 0))
           }((n, _) => n)
           died  <- d(1).exit
@@ -253,7 +253,7 @@ object PerKeySpec extends ZIOSpecDefault:
         for
           down    <- downstream
           cfg     <- config(maxBatchSize = 2, maxBatchDelay = 1.second)
-          d       <- dike(cfg, down)
+          d       <- ferry(cfg, down)
           gone    <- d("k" -> 1).fork
           _       <- suspended(gone)
           _       <- gone.interrupt
@@ -266,7 +266,7 @@ object PerKeySpec extends ZIOSpecDefault:
           down    <- downstream
           cfg     <- config(maxBatchSize = 1)
           scope   <- Scope.make
-          d       <- scope.extend(dike(cfg, down, held = Set("k")))
+          d       <- scope.extend(ferry(cfg, down, held = Set("k")))
           running <- d("k" -> 1).fork
           _       <- metricsReach(d)(_.inFlightBatches == 1)
           queued  <- submitInOrder(d, "k" -> 2)

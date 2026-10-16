@@ -1,12 +1,12 @@
-package bulkdike
+package ferry
 
 import zio.*
 import zio.test.*
 
 /**
- * The deployment pattern `BulkDike.perKey` is meant for, simulated under injected faults: several nodes, each normally
- * the only writer of the keys it owns, apply each key's batches to a shared store with a conditional append, and
- * clients retry until they get an answer. The pattern is described in `docs/decisions/0005-fenced-single-writer.md` and
+ * The deployment pattern `Ferry.perKey` is meant for, simulated under injected faults: several nodes, each normally the
+ * only writer of the keys it owns, apply each key's batches to a shared store with a conditional append, and clients
+ * retry until they get an answer. The pattern is described in `docs/decisions/0005-fenced-single-writer.md` and
  * model-checked in `formal/FencedWriter.tla`; this simulation runs the real `perKey` implementation through it.
  *
  * Faults: the store refuses a write (throttling), applies a write but loses its response, or applies it late, after the
@@ -102,8 +102,8 @@ object FencedWriterSimulation:
       inUse   <- Ref.make(Map.empty[(Int, Int), Int])
       overlap <- Ref.make(false)
       scopes  <- ZIO.foreach(0 until nodes)(_ => Scope.make)
-      dikes   <- ZIO.foreach(scopes.zipWithIndex) { (scope, node) =>
-        scope.extend(BulkDike.perKey(cfg, (_: Command).key) { (key, commands: NonEmptyChunk[Command]) =>
+      ferries <- ZIO.foreach(scopes.zipWithIndex) { (scope, node) =>
+        scope.extend(Ferry.perKey(cfg, (_: Command).key) { (key, commands: NonEmptyChunk[Command]) =>
           val slot = node -> key
           inUse
             .modify(m => m.getOrElse(slot, 0) -> m.updated(slot, m.getOrElse(slot, 0) + 1))
@@ -119,7 +119,7 @@ object FencedWriterSimulation:
           crashed.get.flatMap { down =>
             val owner = sub.command.key % nodes
             val node  = if (sub.misrouted && n == 0) || down(owner) then (owner + 1) % nodes else owner
-            dikes(node)(sub.command).exit.flatMap {
+            ferries(node)(sub.command).exit.flatMap {
               case Exit.Success(position) => acks.update(_ + (sub.command.id -> position))
               case Exit.Failure(_)        => ZIO.when(n < 30)(ZIO.sleep(20.millis) *> attempt(n + 1)).unit
             }

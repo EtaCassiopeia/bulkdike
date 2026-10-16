@@ -14,7 +14,7 @@ response, answer each input on its own.
 ## Decision
 
 `FoldWrite(id, read, step, write, retry)` is that round trip, usable as the batch call and the extract of
-`BulkDike.perKey` (`write.call`, `write.outcome`):
+`Ferry.perKey` (`write.call`, `write.outcome`):
 
 - `step(state, input)` is the application's pure logic: the next state and the input's outcome. It sees the state as
   read, so it answers an input already applied without applying it again; that makes a retry after a lost response safe.

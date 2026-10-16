@@ -1,14 +1,14 @@
-package bulkdike
+package ferry
 
 import zio.*
 import zio.test.*
 
-object BulkDikePropertySpec extends ZIOSpecDefault:
+object FerryPropertySpec extends ZIOSpecDefault:
 
   private def honoursContract(scenarios: Gen[Any, Simulation.Scenario]) =
     check(scenarios)(s => Simulation.run(s).map(trace => assertTrue(Simulation.violations(s, trace) == Nil)))
 
-  def spec = suite("BulkDike properties")(
+  def spec = suite("Ferry properties")(
     suite("simulated workloads")(
       test("honours its contract under random load, latency, failures and defects") {
         honoursContract(Simulation.scenario(cancellations = false, close = false))
@@ -23,14 +23,14 @@ object BulkDikePropertySpec extends ZIOSpecDefault:
     test("keyed sends each distinct input once and answers every caller from the map") {
       check(Gen.chunkOfBounded(1, 20)(Gen.int(0, 6))) { inputs =>
         for
-          cfg     <- ZIO.fromEither(BulkDikeConfig.make(inputs.size, 1.hour, 1, inputs.size)).orDie
+          cfg     <- ZIO.fromEither(FerryConfig.make(inputs.size, 1.hour, 1, inputs.size)).orDie
           sent    <- Ref.make(Chunk.empty[Chunk[Int]])
           results <- ZIO.scoped {
-            BulkDike
+            Ferry
               .keyed(cfg) { (batch: NonEmptyChunk[Int]) =>
                 sent.update(_ :+ batch.toChunk).as(batch.filter(_ % 2 == 0).map(n => n -> n * 10).toMap)
               }
-              .flatMap(dike => ZIO.foreachPar(inputs)(dike(_)))
+              .flatMap(ferry => ZIO.foreachPar(inputs)(ferry(_)))
           }
           batches <- sent.get
         yield assertTrue(
@@ -43,7 +43,7 @@ object BulkDikePropertySpec extends ZIOSpecDefault:
     test("accepts a configuration exactly when every constraint holds, and reports each one that does not") {
       check(Gen.int(-1, 6), Gen.long(-2, 3), Gen.int(-1, 3), Gen.int(-1, 8)) { (size, delayMs, inFlight, queueing) =>
         val broken = List(size < 1, delayMs < 0, inFlight < 1, queueing < size).count(identity)
-        BulkDikeConfig.make(size, delayMs.millis, inFlight, queueing) match
+        FerryConfig.make(size, delayMs.millis, inFlight, queueing) match
           case Right(cfg) =>
             assertTrue(
               broken == 0,

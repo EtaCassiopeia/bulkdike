@@ -27,7 +27,7 @@ that every formal model ships with weakened variants that must fail.
 
 - Nothing checks mechanically that a new test would fail on wrong code; a reviewer has to ask. For a race, the answer
   is a formal variant that must fail.
-- `BULKDIKE_SAMPLES` and `BULKDIKE_TEST_TIMEOUT_SECONDS` stay: searching longer before a release, and failing a hung
+- `FERRY_SAMPLES` and `FERRY_TEST_TIMEOUT_SECONDS` stay: searching longer before a release, and failing a hung
   test fast, are useful without mutants.
 - **Revisit when** a bug reaches a release that the suite should have caught, which would mean the tests are weaker than
   they look.

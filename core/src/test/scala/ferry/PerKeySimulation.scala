@@ -1,10 +1,10 @@
-package bulkdike
+package ferry
 
 import zio.*
 import zio.test.*
 
 /**
- * Random workloads for `BulkDike.perKey`, run on the TestClock, with every trace checked against its contract.
+ * Random workloads for `Ferry.perKey`, run on the TestClock, with every trace checked against its contract.
  *
  * A scenario submits inputs for a few keys at random instants, with random weights, batch latencies, failing batches,
  * callers that give up, and optionally closes the scope part way through. Time only moves when the simulation advances
@@ -102,8 +102,8 @@ object PerKeySimulation:
       closedAt  <- Ref.make(Option.empty[Long])
       // Set by each client, so a call made by a client rather than a worker (forked at creation) can tell who made it.
       caller <- FiberRef.make(Option.empty[Int])
-      dike   <- scope.extend(
-        BulkDike.perKey(s.config, (_: Input).key, (_: Input).weight, Order.by((_: Input).rank)) {
+      ferry  <- scope.extend(
+        Ferry.perKey(s.config, (_: Input).key, (_: Input).weight, Order.by((_: Input).rank)) {
           (key, inputs: NonEmptyChunk[Input]) =>
             // Bookkeeping is acquired and released as one: a direct call is interrupted whenever its caller is, which
             // must not leave a key counted as busy.
@@ -127,17 +127,17 @@ object PerKeySimulation:
             }
         }((input, results) => results(input.id))
       )
-      classify = (exit: Exit[BulkDikeError[String], Int]) =>
+      classify = (exit: Exit[FerryError[String], Int]) =>
         exit match
-          case Exit.Success(v)                                                     => Outcome.Succeeded(v)
-          case Exit.Failure(c) if c.failureOption.contains(BulkDikeError.Rejected) => Outcome.Rejected
-          case Exit.Failure(c) if c.failureOption.isDefined                        => Outcome.Failed
-          case Exit.Failure(_)                                                     => Outcome.Interrupted
+          case Exit.Success(v)                                                  => Outcome.Succeeded(v)
+          case Exit.Failure(c) if c.failureOption.contains(FerryError.Rejected) => Outcome.Rejected
+          case Exit.Failure(c) if c.failureOption.isDefined                     => Outcome.Failed
+          case Exit.Failure(_)                                                  => Outcome.Interrupted
       client = (sub: Submission) =>
         for
           at    <- nowMs
           _     <- submitted.update(_ + (sub.input.id -> at))
-          fiber <- caller.locally(Some(sub.input.id))(dike(sub.input)).forkIn(clients)
+          fiber <- caller.locally(Some(sub.input.id))(ferry(sub.input)).forkIn(clients)
           // Awaited from outside: a caller interrupted before it even started still has an outcome.
           _ <- fiber.await.flatMap(e => outcomes.update(_ + (sub.input.id -> classify(e)))).forkIn(clients)
           _ <- ZIO.foreachDiscard(sub.cancelAfterMs) { after =>

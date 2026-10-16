@@ -1,6 +1,6 @@
 # Batching calls
 
-`BulkDike.make` and `BulkDike.keyed` batch one stream of independent calls. Use them in front of an API that accepts
+`Ferry.make` and `Ferry.keyed` batch one stream of independent calls. Use them in front of an API that accepts
 many inputs per request, where the cost of a request barely depends on how many inputs it carries.
 
 If the inputs belong to entities whose updates must stay in order, use [`perKey`](per-key.md) instead.
@@ -14,17 +14,17 @@ Inputs wait in one bounded queue. A batch is sent as soon as either of these hap
 
 At most `maxInFlightBatches` batch calls run at once. While every slot is busy, inputs keep waiting. An input whose
 deadline passed while it waited is sent as soon as a slot frees, and its wait does not start over. When
-`maxQueueing` inputs are already waiting, a new call fails at once with `BulkDikeError.Rejected`.
+`maxQueueing` inputs are already waiting, a new call fails at once with `FerryError.Rejected`.
 
 ```mermaid
 sequenceDiagram
   participant A as caller A
   participant B as caller B
-  participant D as BulkDike
+  participant D as Ferry
   participant S as external system
-  A->>D: dike(a)
+  A->>D: ferry(a)
   Note over D: oldest input: deadline = now + maxBatchDelay
-  B->>D: dike(b)
+  B->>D: ferry(b)
   Note over D: batch full, or deadline reached
   D->>S: call([a, b])
   S-->>D: result
@@ -38,7 +38,7 @@ sequenceDiagram
 batch, however many callers ask for it. A caller whose input is missing from the map gets `None`:
 
 ```scala
-BulkDike.keyed(config)((ids: NonEmptyChunk[UserId]) => profiles.fetch(ids)) // BulkDike[UserId, E, Option[Profile]]
+Ferry.keyed(config)((ids: NonEmptyChunk[UserId]) => profiles.fetch(ids)) // Ferry[UserId, E, Option[Profile]]
 ```
 
 ## `make`: any batch result
@@ -56,7 +56,7 @@ If `extract` throws, only that caller fails, with the exception as a defect.
 
 ## Handling the answer
 
-A call fails with a `BulkDikeError[E]`:
+A call fails with a `FerryError[E]`:
 
 ```scala
 --8<-- "Snippets.scala:outcomes"
@@ -68,13 +68,13 @@ A call fails with a `BulkDikeError[E]`:
 | `Rejected` | `maxQueueing` inputs were already waiting; nothing was sent | yes, after a backoff |
 | `Failed(e)` | the batch call carrying this input failed with `e` | depends on `e` and on whether the call is idempotent |
 | a defect | the batch call or `extract` died | no |
-| interruption | the dike's scope closed | the process is shutting down |
+| interruption | the ferry's scope closed | the process is shutting down |
 
-`toException` turns a `BulkDikeError` into an exception, for code that works in `Task`.
+`toException` turns a `FerryError` into an exception, for code that works in `Task`.
 
 ## Retries, timeouts and circuit breakers
 
-BulkDike decides how many calls run and which inputs share them. It does not retry. Wrap the batch call in your
+Ferry decides how many calls run and which inputs share them. It does not retry. Wrap the batch call in your
 resilience policies, so that a retry or a timeout covers every caller in the batch at once. With
 [rezilience](https://github.com/svroonland/rezilience):
 

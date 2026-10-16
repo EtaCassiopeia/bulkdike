@@ -1,6 +1,6 @@
 # Per-key batching
 
-`BulkDike.perKey` batches each key's inputs separately and keeps them in order. A key is whatever your updates must
+`Ferry.perKey` batches each key's inputs separately and keeps them in order. A key is whatever your updates must
 be serialised by: an entity, a stream, a document, a log.
 
 It suits a write path where each entity is updated by a read-modify-write guarded by a conditional write. Such an
@@ -93,7 +93,7 @@ and fail only when the batch as a whole did not happen:
 
 - `call` returns, for example, `Map[Id, Either[Rejection, Result]]`, and applies the valid inputs;
 - `call` fails only when nothing was applied (the store was unavailable, the write was refused). Every caller in the
-  batch then gets `BulkDikeError.Failed`, and that is the failure worth retrying;
+  batch then gets `FerryError.Failed`, and that is the failure worth retrying;
 - `extract` picks each caller's outcome.
 
 See [0006](../decisions/0006-per-input-outcomes.md). [`FoldWrite`](fold-write.md) implements this for the read,

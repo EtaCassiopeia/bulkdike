@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Model-checks the BulkDike protocols with TLC. Each spec has one configuration that must pass, and weakened
+# Model-checks the Ferry protocols with TLC. Each spec has one configuration that must pass, and weakened
 # variants that must FAIL: each variant removes one mechanism, and its failure proves that mechanism is needed.
 #
-#   BulkDike.tla      BulkDike.make: one queue, a forming lock, interruptible workers (safety and liveness)
+#   Ferry.tla      Ferry.make: one queue, a forming lock, interruptible workers (safety and liveness)
 #     UnserialisedAdmission, NoCleanupOnInterrupt, NonAtomicTake      -> a caller is stranded
-#   PerKey.tla        BulkDike.perKey: per-key lanes in rank order, one call in flight per key, idle keys called directly
+#   PerKey.tla        Ferry.perKey: per-key lanes in rank order, one call in flight per key, idle keys called directly
 #                     (PerKey) or every input batched (PerKeyBatchOnly); safety and liveness
 #     PerKeyUnsorted      -> inputs waiting together are sent out of rank order
 #     PerKeyNoBusyGuard, PerKeyNoDirectGuard, PerKeyNoAwaitCall -> a key has two calls in flight
@@ -40,8 +40,8 @@ fails() { # spec config
   echo "violated, as expected"
 }
 
-passes BulkDike BulkDike
-for variant in UnserialisedAdmission NoCleanupOnInterrupt NonAtomicTake; do fails BulkDike "$variant"; done
+passes Ferry Ferry
+for variant in UnserialisedAdmission NoCleanupOnInterrupt NonAtomicTake; do fails Ferry "$variant"; done
 
 passes PerKey PerKey
 passes PerKey PerKeyBatchOnly

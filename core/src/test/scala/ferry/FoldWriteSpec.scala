@@ -1,4 +1,4 @@
-package bulkdike
+package ferry
 
 import zio.*
 import zio.test.*
@@ -88,13 +88,13 @@ object FoldWriteSpec extends ZIOSpecDefault:
         exit <- foldWrite(s).call("k", NonEmptyChunk(5)).exit
       yield assertTrue(exit.causeOption.flatMap(_.failureOption).contains("conflict"))
     },
-    test("serves BulkDike.perKey as its call and extract") {
+    test("serves Ferry.perKey as its call and extract") {
       for
         s   <- store()
         cfg <- ZIO.fromEither(PerKeyConfig.make(maxBatchSize = 10, maxInFlightBatches = 2, maxQueueing = 100)).orDie
         write = foldWrite(s)
-        dike    <- BulkDike.perKey(cfg, (_: Int) => "k")(write.call)(write.outcome)
-        results <- ZIO.foreachPar(1 to 20)(dike(_))
+        ferry   <- Ferry.perKey(cfg, (_: Int) => "k")(write.call)(write.outcome)
+        results <- ZIO.foreachPar(1 to 20)(ferry(_))
         log     <- s.read("k")
       yield assertTrue(log.sorted == (1 to 20).toVector, results.forall(_.isRight))
     }

@@ -8,50 +8,50 @@
 
 ## Add the dependency
 
-BulkDike is not yet published to Maven Central. Until it is, publish it to your local repository:
+Ferry is not yet published to Maven Central. Until it is, publish it to your local repository:
 
 ```sh
-git clone https://github.com/EtaCassiopeia/bulkdike.git
-cd bulkdike
+git clone https://github.com/EtaCassiopeia/zio-ferry.git
+cd zio-ferry
 sbt core/publishLocal
 ```
 
 Then depend on it:
 
 ```scala
-libraryDependencies += "io.github.etacassiopeia" %% "bulkdike" % "0.1.0-SNAPSHOT"
+libraryDependencies += "io.github.etacassiopeia" %% "zio-ferry" % "0.1.0-SNAPSHOT"
 ```
 
 Its only dependency is ZIO itself.
 
-## A first dike
+## A first ferry
 
-A dike lives in a `Scope`. Closing the scope stops its workers and interrupts any caller still waiting, so create it
+A ferry lives in a `Scope`. Closing the scope stops its workers and interrupts any caller still waiting, so create it
 once, at startup, next to the client it protects.
 
-The common case is an API that answers a batch of inputs with one result per distinct input. `BulkDike.keyed` covers
+The common case is an API that answers a batch of inputs with one result per distinct input. `Ferry.keyed` covers
 it:
 
 ```scala
-import bulkdike.*
+import ferry.*
 import zio.*
 
---8<-- "Snippets.scala:first-dike"
+--8<-- "Snippets.scala:first-ferry"
 ```
 
 `prices("NL")` waits until a batch carrying `"NL"` returns, then answers with that country's price, or `None` if the
 batch result has no entry for it. Each distinct input is sent once per batch, even if several callers ask for it.
 
-`BulkDikeConfig.make` and `PerKeyConfig.make` return an `Either` that lists every invalid setting at once, so a
+`FerryConfig.make` and `PerKeyConfig.make` return an `Either` that lists every invalid setting at once, so a
 misconfiguration fails at startup, not on the first call.
 
 ## Run the examples
 
-Two runnable programs live in [`examples/`](https://github.com/EtaCassiopeia/bulkdike/tree/main/examples/src/main/scala/bulkdike/examples):
+Two runnable programs live in [`examples/`](https://github.com/EtaCassiopeia/zio-ferry/tree/main/examples/src/main/scala/ferry/examples):
 
 ```sh
-sbt "examples/runMain bulkdike.examples.PricingAggregation"
-sbt "examples/runMain bulkdike.examples.OrderedWrites"
+sbt "examples/runMain ferry.examples.PricingAggregation"
+sbt "examples/runMain ferry.examples.OrderedWrites"
 ```
 
 - **PricingAggregation** coalesces concurrent price lookups and wraps each batch call in a timeout, a retry and a

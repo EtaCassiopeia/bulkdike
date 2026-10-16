@@ -20,7 +20,7 @@ worker. The key is busy while that call is in flight, so inputs that arrive mean
 behind it. A key switches to batching exactly when it has concurrent work, and back when it is idle again: the key's own
 concurrency is the classification.
 
-- The call runs in a fiber forked into the dike's scope, so closing the scope interrupts it like any batch in flight.
+- The call runs in a fiber forked into the ferry's scope, so closing the scope interrupts it like any batch in flight.
 - An interrupted caller interrupts its call and releases the key **only once the call is over**; releasing earlier
   would let the next batch overtake a call still on the wire.
 - Direct calls are not counted against `maxInFlightBatches`, which bounds the batches of busy keys: quiet traffic never

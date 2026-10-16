@@ -53,8 +53,8 @@ its position. Only a store error fails the batch, and that is the case `retry` r
 --8<-- "OrderedWrites.scala:wiring"
 ```
 
-The [OrderedWrites example](https://github.com/EtaCassiopeia/bulkdike/blob/main/examples/src/main/scala/bulkdike/examples/OrderedWrites.scala)
-runs this against a store that throttles one request in seven. It writes 300 entries in about two dozen requests, each
+The [OrderedWrites example](https://github.com/EtaCassiopeia/zio-ferry/blob/main/examples/src/main/scala/ferry/examples/OrderedWrites.scala)
+runs this against a store that throttles one request in seven. It writes 300 entries in about twenty requests, each
 entry exactly once, ordered by effective day.
 
 ## Why not cache the state?

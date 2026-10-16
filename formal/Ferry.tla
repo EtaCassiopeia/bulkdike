@@ -1,6 +1,6 @@
------------------------------- MODULE BulkDike ------------------------------
+------------------------------ MODULE Ferry ------------------------------
 (***************************************************************************)
-(* The concurrency protocol of bulkdike.BulkDike, at the granularity of   *)
+(* The concurrency protocol of ferry.Ferry, at the granularity of   *)
 (* its atomic steps (Ref/Queue operations and uninterruptible regions).   *)
 (*                                                                         *)
 (* Callers submit inputs; workers, one per batch slot, take turns under a *)

@@ -16,7 +16,7 @@ per key would hold state the store already holds, be wrong after a routing hando
 
 ## Decision
 
-`BulkDike.perKey` takes an `order: Order[I]`: a pure `rank(input): Long`, evaluated once per input at submission,
+`Ferry.perKey` takes an `order: Order[I]`: a pure `rank(input): Long`, evaluated once per input at submission,
 outside any transaction. A lane keeps its inputs in ascending rank, ties in arrival order, and batches are taken from its
 front.
 
@@ -40,7 +40,7 @@ counts from a partial batch's oldest input by arrival, whatever its rank.
   - **holding inputs for a bound** (`eventTime(at, lateness)`: wait until `at + lateness` on the local clock, report
     later inputs as late), for an append-only store that refuses an input older than its newest. It costs the bound in
     latency on every input, and disables the direct path;
-  - **rejecting late inputs** (`BulkDikeError.Late`), for the same kind of store;
+  - **rejecting late inputs** (`FerryError.Late`), for the same kind of store;
   - **partition boundaries** (batches never mix, say, two time buckets), for a group operation that refuses such a
     group;
   - **gap waiting on sequence numbers**: never in the batcher, because the next expected number is the store's state,

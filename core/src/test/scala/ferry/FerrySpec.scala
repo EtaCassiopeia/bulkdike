@@ -1,18 +1,18 @@
-package bulkdike
+package ferry
 
 import zio.*
 import zio.test.*
 import zio.test.Assertion.*
 
-object BulkDikeSpec extends ZIOSpecDefault:
+object FerrySpec extends ZIOSpecDefault:
 
   private def config(
     maxBatchSize: Int = 5,
     maxBatchDelay: Duration = 5.seconds,
     maxInFlightBatches: Int = 1,
     maxQueueing: Int = 16
-  ): UIO[BulkDikeConfig] =
-    ZIO.fromEither(BulkDikeConfig.make(maxBatchSize, maxBatchDelay, maxInFlightBatches, maxQueueing)).orDie
+  ): UIO[FerryConfig] =
+    ZIO.fromEither(FerryConfig.make(maxBatchSize, maxBatchDelay, maxInFlightBatches, maxQueueing)).orDie
 
   /** A batch call that records every batch it receives and answers `n -> s"result-$n"`. */
   final private case class Recorder(batches: Ref[Chunk[Chunk[Int]]]):
@@ -21,8 +21,8 @@ object BulkDikeSpec extends ZIOSpecDefault:
 
   private val recorder = Ref.make(Chunk.empty[Chunk[Int]]).map(Recorder(_))
 
-  private def recordingDike(cfg: BulkDikeConfig, rec: Recorder) =
-    BulkDike.make(cfg)(rec.call)((n, results) => results(n))
+  private def recordingFerry(cfg: FerryConfig, rec: Recorder) =
+    Ferry.make(cfg)(rec.call)((n, results) => results(n))
 
   /** Waits until some fiber is blocked on the TestClock, i.e. a partial batch is waiting for its deadline. */
   private val batchWaiting: UIO[Unit] =
@@ -35,17 +35,17 @@ object BulkDikeSpec extends ZIOSpecDefault:
       case _                         => false
     }.unit
 
-  private def metricsReach(dike: BulkDike[?, ?, ?])(p: BulkDike.Metrics => Boolean): UIO[Unit] =
-    dike.metrics.repeatUntil(p).unit
+  private def metricsReach(ferry: Ferry[?, ?, ?])(p: Ferry.Metrics => Boolean): UIO[Unit] =
+    ferry.metrics.repeatUntil(p).unit
 
-  def spec = suite("BulkDike")(
+  def spec = suite("Ferry")(
     suite("batching")(
       test("dispatches a full batch immediately, without waiting for the delay") {
         for
           rec     <- recorder
           cfg     <- config(maxBatchSize = 5)
-          dike    <- recordingDike(cfg, rec)
-          results <- ZIO.foreachPar(1 to 5)(dike(_))
+          ferry   <- recordingFerry(cfg, rec)
+          results <- ZIO.foreachPar(1 to 5)(ferry(_))
           batches <- rec.batches.get
         yield assertTrue(
           results == (1 to 5).map(n => s"result-$n"),
@@ -57,12 +57,12 @@ object BulkDikeSpec extends ZIOSpecDefault:
         for
           rec     <- recorder
           cfg     <- config(maxBatchSize = 5, maxBatchDelay = 5.seconds)
-          dike    <- recordingDike(cfg, rec)
+          ferry   <- recordingFerry(cfg, rec)
           _       <- TestClock.adjust(4.seconds) // idle time must not count towards the deadline
-          first   <- dike(1).fork
+          first   <- ferry(1).fork
           _       <- batchWaiting
           _       <- TestClock.adjust(3.seconds)
-          second  <- dike(2).fork
+          second  <- ferry(2).fork
           _       <- suspended(second)
           _       <- TestClock.adjust(1.second)
           early   <- first.poll
@@ -79,15 +79,15 @@ object BulkDikeSpec extends ZIOSpecDefault:
         for
           gate    <- Promise.make[Nothing, Unit]
           cfg     <- config(maxBatchSize = 2, maxBatchDelay = 5.seconds, maxInFlightBatches = 1)
-          dike    <- BulkDike.make(cfg)((ids: NonEmptyChunk[Int]) => gate.await.when(ids.contains(1)))((n, _) => n)
-          busy    <- ZIO.foreach(List(1, 2))(dike(_).fork) // a full batch occupies the only slot
-          _       <- metricsReach(dike)(_.inFlightBatches == 1)
-          overdue <- dike(3).fork
-          _       <- metricsReach(dike)(_.queued == 1)
-          _       <- TestClock.adjust(10.seconds)          // 3 has now waited twice its delay
+          ferry   <- Ferry.make(cfg)((ids: NonEmptyChunk[Int]) => gate.await.when(ids.contains(1)))((n, _) => n)
+          busy    <- ZIO.foreach(List(1, 2))(ferry(_).fork) // a full batch occupies the only slot
+          _       <- metricsReach(ferry)(_.inFlightBatches == 1)
+          overdue <- ferry(3).fork
+          _       <- metricsReach(ferry)(_.queued == 1)
+          _       <- TestClock.adjust(10.seconds)           // 3 has now waited twice its delay
           _       <- gate.succeed(())
           _       <- ZIO.foreach(busy)(_.join)
-          _       <- TestClock.adjust(Duration.Zero)       // let the freed worker run, without moving time
+          _       <- TestClock.adjust(Duration.Zero)        // let the freed worker run, without moving time
           result  <- overdue.poll
         yield assertTrue(result.exists(_ == Exit.succeed(3)))
       },
@@ -95,19 +95,19 @@ object BulkDikeSpec extends ZIOSpecDefault:
         for
           rec     <- recorder
           cfg     <- config(maxBatchSize = 3)
-          dike    <- recordingDike(cfg, rec)
-          results <- ZIO.foreachPar(List(7, 7, 8))(dike(_))
+          ferry   <- recordingFerry(cfg, rec)
+          results <- ZIO.foreachPar(List(7, 7, 8))(ferry(_))
           batches <- rec.batches.get
         yield assertTrue(results == List("result-7", "result-7", "result-8"), batches.head.sorted == Chunk(7, 7, 8))
       },
       test("keyed passes each distinct input once and answers None for missing keys") {
         for
-          seen <- Ref.make(Chunk.empty[Chunk[Int]])
-          cfg  <- config(maxBatchSize = 4)
-          dike <- BulkDike.keyed(cfg) { (inputs: NonEmptyChunk[Int]) =>
+          seen  <- Ref.make(Chunk.empty[Chunk[Int]])
+          cfg   <- config(maxBatchSize = 4)
+          ferry <- Ferry.keyed(cfg) { (inputs: NonEmptyChunk[Int]) =>
             seen.update(_ :+ inputs.toChunk).as(inputs.filter(_ != 3).map(n => n -> n * 10).toMap)
           }
-          results <- ZIO.foreachPar(List(1, 1, 2, 3))(dike(_))
+          results <- ZIO.foreachPar(List(1, 1, 2, 3))(ferry(_))
           batches <- seen.get
         yield assertTrue(
           results == List(Some(10), Some(10), Some(20), None),
@@ -120,15 +120,15 @@ object BulkDikeSpec extends ZIOSpecDefault:
         for
           gate     <- Promise.make[Nothing, Unit]
           cfg      <- config(maxBatchSize = 1, maxBatchDelay = Duration.Zero, maxInFlightBatches = 1, maxQueueing = 1)
-          dike     <- BulkDike.make(cfg)((_: NonEmptyChunk[Int]) => gate.await)((n, _) => n)
-          running  <- dike(1).fork
-          _        <- metricsReach(dike)(_.inFlightBatches == 1)
-          queued   <- dike(2).fork
-          _        <- metricsReach(dike)(_.queued == 1)
-          rejected <- dike(3).exit
+          ferry    <- Ferry.make(cfg)((_: NonEmptyChunk[Int]) => gate.await)((n, _) => n)
+          running  <- ferry(1).fork
+          _        <- metricsReach(ferry)(_.inFlightBatches == 1)
+          queued   <- ferry(2).fork
+          _        <- metricsReach(ferry)(_.queued == 1)
+          rejected <- ferry(3).exit
           _        <- gate.succeed(())
           done     <- running.join.zip(queued.join)
-        yield assert(rejected)(fails(equalTo(BulkDikeError.Rejected))) && assertTrue(done == (1, 2))
+        yield assert(rejected)(fails(equalTo(FerryError.Rejected))) && assertTrue(done == (1, 2))
       },
       test("never runs more than maxInFlightBatches batch calls at once") {
         for
@@ -136,13 +136,13 @@ object BulkDikeSpec extends ZIOSpecDefault:
           current <- Ref.make(0)
           peak    <- Ref.make(0)
           cfg     <- config(maxBatchSize = 1, maxBatchDelay = Duration.Zero, maxInFlightBatches = 2)
-          dike    <- BulkDike.make(cfg) { (_: NonEmptyChunk[Int]) =>
+          ferry   <- Ferry.make(cfg) { (_: NonEmptyChunk[Int]) =>
             ZIO.acquireReleaseWith(current.updateAndGet(_ + 1).flatMap(n => peak.update(_ max n)))(_ =>
               current.update(_ - 1)
             )(_ => gate.await)
           }((n, _) => n)
-          calls   <- ZIO.foreach(1 to 6)(dike(_).fork)
-          _       <- metricsReach(dike)(m => m.inFlightBatches == 2 && m.queued == 4)
+          calls   <- ZIO.foreach(1 to 6)(ferry(_).fork)
+          _       <- metricsReach(ferry)(m => m.inFlightBatches == 2 && m.queued == 4)
           _       <- gate.succeed(())
           results <- ZIO.foreach(calls)(_.join)
           maxSeen <- peak.get
@@ -154,28 +154,28 @@ object BulkDikeSpec extends ZIOSpecDefault:
         for
           attempt <- Ref.make(0)
           cfg     <- config(maxBatchSize = 2)
-          dike    <- BulkDike.make(cfg) { (_: NonEmptyChunk[Int]) =>
+          ferry   <- Ferry.make(cfg) { (_: NonEmptyChunk[Int]) =>
             attempt.getAndUpdate(_ + 1).flatMap(n => ZIO.fail("upstream down").when(n == 0))
           }((n, _) => n)
-          failed <- ZIO.foreachPar(List(1, 2))(dike(_).exit)
-          later  <- ZIO.foreachPar(List(3, 4))(dike(_))
-        yield assert(failed)(forall(fails(equalTo(BulkDikeError.Failed("upstream down"))))) &&
+          failed <- ZIO.foreachPar(List(1, 2))(ferry(_).exit)
+          later  <- ZIO.foreachPar(List(3, 4))(ferry(_))
+        yield assert(failed)(forall(fails(equalTo(FerryError.Failed("upstream down"))))) &&
           assertTrue(later == List(3, 4))
       },
       test("propagates a defect in the batch call to its callers instead of hanging them") {
         val boom = new RuntimeException("boom")
         for
           cfg   <- config(maxBatchSize = 2)
-          dike  <- BulkDike.make(cfg)((_: NonEmptyChunk[Int]) => ZIO.die(boom))((n, _: Nothing) => n)
-          exits <- ZIO.foreachPar(List(1, 2))(dike(_).exit)
+          ferry <- Ferry.make(cfg)((_: NonEmptyChunk[Int]) => ZIO.die(boom))((n, _: Nothing) => n)
+          exits <- ZIO.foreachPar(List(1, 2))(ferry(_).exit)
         yield assertTrue(exits.forall(_.causeOption.flatMap(_.dieOption).contains(boom)))
       },
       test("turns an exception thrown by extract into a defect for that caller only") {
         val boom = new RuntimeException("bad input")
         for
           cfg   <- config(maxBatchSize = 2)
-          dike  <- BulkDike.make(cfg)((_: NonEmptyChunk[Int]) => ZIO.unit)((n, _) => if n == 1 then throw boom else n)
-          exits <- ZIO.foreachPar(List(1, 2))(dike(_).exit)
+          ferry <- Ferry.make(cfg)((_: NonEmptyChunk[Int]) => ZIO.unit)((n, _) => if n == 1 then throw boom else n)
+          exits <- ZIO.foreachPar(List(1, 2))(ferry(_).exit)
         yield assertTrue(exits.head.causeOption.flatMap(_.dieOption).contains(boom), exits(1) == Exit.succeed(2))
       }
     ),
@@ -184,11 +184,11 @@ object BulkDikeSpec extends ZIOSpecDefault:
         for
           rec     <- recorder
           cfg     <- config(maxBatchSize = 2)
-          dike    <- recordingDike(cfg, rec)
-          gone    <- dike(1).fork
+          ferry   <- recordingFerry(cfg, rec)
+          gone    <- ferry(1).fork
           _       <- batchWaiting // 1 is in the batch being assembled
           _       <- gone.interrupt
-          result  <- dike(2)      // fills the batch, which is dispatched without 1
+          result  <- ferry(2)     // fills the batch, which is dispatched without 1
           batches <- rec.batches.get
         yield assertTrue(result == "result-2", batches == Chunk(Chunk(2)))
       },
@@ -199,11 +199,11 @@ object BulkDikeSpec extends ZIOSpecDefault:
           cfg     <- config(maxBatchSize = 1, maxBatchDelay = Duration.Zero, maxInFlightBatches = 1)
           callers <- ZIO.scoped {
             for
-              dike    <- BulkDike.make(cfg)((_: NonEmptyChunk[Int]) => started.succeed(()) *> gate.await)((n, _) => n)
-              running <- dike(1).fork
+              ferry   <- Ferry.make(cfg)((_: NonEmptyChunk[Int]) => started.succeed(()) *> gate.await)((n, _) => n)
+              running <- ferry(1).fork
               _       <- started.await
-              queued  <- dike(2).fork
-              _       <- metricsReach(dike)(_.queued == 1)
+              queued  <- ferry(2).fork
+              _       <- metricsReach(ferry)(_.queued == 1)
             yield (running, queued)
           }
           running <- callers._1.await
@@ -212,22 +212,22 @@ object BulkDikeSpec extends ZIOSpecDefault:
       },
       test("interrupts calls made after the scope has closed") {
         for
-          cfg  <- config()
-          dike <- ZIO.scoped(BulkDike.make(cfg)((_: NonEmptyChunk[Int]) => ZIO.unit)((n, _) => n))
-          exit <- dike(1).exit
+          cfg   <- config()
+          ferry <- ZIO.scoped(Ferry.make(cfg)((_: NonEmptyChunk[Int]) => ZIO.unit)((n, _) => n))
+          exit  <- ferry(1).exit
         yield assertTrue(exit.isInterrupted)
       }
     ),
-    suite("BulkDikeConfig")(
+    suite("FerryConfig")(
       test("accepts a sensible configuration") {
-        assertTrue(BulkDikeConfig.make(5, 5.seconds, 2, 10).isRight)
+        assertTrue(FerryConfig.make(5, 5.seconds, 2, 10).isRight)
       },
       test("reports every problem at once") {
-        val result = BulkDikeConfig.make(0, (-1).second, 0, -1)
+        val result = FerryConfig.make(0, (-1).second, 0, -1)
         assert(result.left.map(_.problems.size))(isLeft(equalTo(4)))
       },
       test("names each broken setting and the value it was given") {
-        val problems = BulkDikeConfig.make(0, (-1).second, 0, 0).left.toOption.toList.flatMap(_.problems)
+        val problems = FerryConfig.make(0, (-1).second, 0, 0).left.toOption.toList.flatMap(_.problems)
         assertTrue(
           problems.exists(p => p.contains("maxBatchSize") && p.contains("got 0")),
           problems.exists(p => p.contains("maxBatchDelay") && p.contains("negative")),
@@ -236,12 +236,12 @@ object BulkDikeSpec extends ZIOSpecDefault:
       },
       test("explains errors when turned into exceptions") {
         assertTrue(
-          BulkDikeError.Rejected.toException.getMessage.contains("queue is full"),
-          BulkDikeError.Failed("upstream down").toException.getMessage.contains("upstream down")
+          FerryError.Rejected.toException.getMessage.contains("queue is full"),
+          FerryError.Failed("upstream down").toException.getMessage.contains("upstream down")
         )
       },
       test("requires the queue to hold at least one full batch") {
-        assert(BulkDikeConfig.make(5, 1.second, 1, 4).left.map(_.problems.head))(
+        assert(FerryConfig.make(5, 1.second, 1, 4).left.map(_.problems.head))(
           isLeft(containsString("maxQueueing (4) must be at least maxBatchSize (5)"))
         )
       }

@@ -1,4 +1,4 @@
-package bulkdike
+package ferry
 
 import zio.*
 import zio.test.TestClock
