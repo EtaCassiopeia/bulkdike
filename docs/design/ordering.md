@@ -1,7 +1,12 @@
 # Ordering, lateness and grouping: a strategy-agnostic kernel with pluggable policies
 
-Status: proposal, not yet built. Part A is the design note; Part B holds draft decision records 0010–0013, to move into
-`docs/decisions` as each is accepted; Part C is the verification plan, build order and migration path.
+Status: partly built. Built: the pluggable order with `Order.arrival` and `Order.by`
+([0011](../decisions/0011-pluggable-dispatch-order.md)), the `directIdleKeys` switch
+([0010](../decisions/0010-direct-calls-for-idle-keys.md)) and the `FoldWrite` helper
+([0012](../decisions/0012-fold-write-helper.md)). Still proposals, each waiting for a store that needs it: the
+`eventTime` hold, the `Late` verdict and `partition`. The draft records in Part B use their own numbering and are
+superseded by the accepted records where they overlap. Part A is the design note; Part C is the verification plan,
+build order and migration path.
 
 ---
 
