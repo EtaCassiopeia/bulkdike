@@ -19,9 +19,12 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = Path("core/src/main/scala/bulkdike/BulkDike.scala")
+MAIN = Path("core/src/main/scala/bulkdike")
+SOURCE = MAIN / "BulkDike.scala"
+PER_KEY = MAIN / "PerKeyDike.scala"
+LANES = MAIN / "Lanes.scala"
 
-# name -> (why it matters, text to replace, replacement)
+# name -> (why it matters, text to replace, replacement), all in SOURCE
 MUTANTS = {
     "no-worker-cleanup": (
         "an interrupted worker strands the callers whose inputs it had taken",
@@ -121,12 +124,104 @@ MUTANTS = {
     ),
 }
 
+# name -> (file, why it matters, text to replace, replacement), for BulkDike.perKey
+PER_KEY_MUTANTS = {
+    "perkey-take-busy-key": (
+        LANES,
+        "a key whose batch is in flight can be taken again, so it has two batches in flight",
+        "              ready = rest,\n",
+        "              ready = if remaining.isEmpty then rest else rest :+ key,\n",
+    ),
+    "perkey-never-release": (
+        PER_KEY,
+        "a key stays busy after its batch completes, so its later inputs wait forever",
+        "run(k, batch).ensuring(lanes.update(_.release(k)).commit)",
+        "run(k, batch)",
+    ),
+    "perkey-lifo-turns": (
+        LANES,
+        "a lane that goes back in line jumps the queue, so a busy key can starve the others",
+        "ready = ready :+ key",
+        "ready = key +: ready",
+    ),
+    "perkey-ignore-batch-weight": (
+        LANES,
+        "batches exceed maxBatchWeight",
+        "batch.size < limits.maxBatchSize && item.weight <= limits.maxBatchWeight - weight",
+        "batch.size < limits.maxBatchSize",
+    ),
+    "perkey-ignore-queued-weight": (
+        LANES,
+        "admission ignores maxQueuedWeight, so waiting inputs are not bounded by weight",
+        "if queued >= limits.maxQueueing || item.weight > limits.maxQueuedWeight - weight then None",
+        "if queued >= limits.maxQueueing then None",
+    ),
+    "perkey-no-batch-delay": (
+        LANES,
+        "partial batches leave immediately instead of waiting maxBatchDelay",
+        "saturatingAdd(lane.items.head.submittedAt, limits.maxBatchDelayNanos)",
+        "lane.items.head.submittedAt",
+    ),
+    "perkey-send-cancelled-inputs": (
+        PER_KEY,
+        "inputs of callers that gave up are still sent",
+        "ZIO.filterNot(batch)(_.result.isDone)",
+        "ZIO.succeed(batch.toChunk)",
+    ),
+    "perkey-no-worker-cleanup": (
+        PER_KEY,
+        "an interrupted worker strands the callers whose inputs it had taken",
+        "            .onInterrupt(taken.get.flatMap(ZIO.foreachDiscard(_)(_.result.interrupt)))\n",
+        "",
+    ),
+    "perkey-no-drain-on-close": (
+        PER_KEY,
+        "callers still waiting at close wait forever",
+        "(open.set(false) *> lanes.modify(_.drain)).commit.flatMap(ZIO.foreachDiscard(_)(_.result.interrupt))",
+        "open.set(false).commit",
+    ),
+    "perkey-no-wakeup": (
+        PER_KEY,
+        "an idle worker only wakes at deadlines, so new inputs wait forever",
+        "val changed = lanes.get.retryUntil(_ ne seen).commit.unit",
+        "val changed = ZIO.never",
+    ),
+    "perkey-take-interruptible": (
+        PER_KEY,
+        "a worker interrupted between taking a batch and recording it strands the batch's callers",
+        """          .uninterruptible
+          .flatMap {
+            case Right(batch)""",
+        """          .flatMap {
+            case Right(batch)""",
+    ),
+    "perkey-admission-apart-from-close": (
+        PER_KEY,
+        "an admission checked before close can join its lane after the lanes were emptied",
+        """      open.get
+        .flatMap { isOpen =>
+          if isOpen then lanes.modify(l => l.admit(k, item).fold(Admission.Full -> l)(Admission.Admitted -> _))
+          else STM.succeed(Admission.Closed)
+        }
+        .commit""",
+        """      open.get.commit
+        .flatMap { isOpen =>
+          if isOpen then lanes.modify(l => l.admit(k, item).fold(Admission.Full -> l)(Admission.Admitted -> _)).commit
+          else ZIO.succeed(Admission.Closed)
+        }""",
+    ),
+}
+
+ALL_MUTANTS = {name: (SOURCE, *mutant) for name, mutant in MUTANTS.items()} | PER_KEY_MUTANTS
+
 
 # Races a few instructions wide, which no scheduling-based test hits reliably. Each is instead shown to be a real
 # bug by a TLA+ configuration that model-checks the protocol without the mechanism and must find a stranded caller.
 COVERED_FORMALLY = {
     "unserialised-admission": "formal/UnserialisedAdmission.cfg",
     "take-up-to-interruptible": "formal/NonAtomicTake.cfg",
+    "perkey-take-interruptible": "formal/PerKeyNonAtomicTake.cfg",
+    "perkey-admission-apart-from-close": "formal/PerKeyNonAtomicAdmission.cfg",
 }
 
 
@@ -153,10 +248,10 @@ def run_tests(workdir: Path, env: dict) -> tuple[str, float, str]:
 
 
 def main() -> int:
-    names = sys.argv[1:] or list(MUTANTS)
-    unknown = [n for n in names if n not in MUTANTS]
+    names = sys.argv[1:] or list(ALL_MUTANTS)
+    unknown = [n for n in names if n not in ALL_MUTANTS]
     if unknown:
-        print(f"unknown mutants: {unknown}; known: {list(MUTANTS)}", file=sys.stderr)
+        print(f"unknown mutants: {unknown}; known: {list(ALL_MUTANTS)}", file=sys.stderr)
         return 2
 
     env = dict(os.environ)
@@ -170,8 +265,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="bulkdike-mutants-") as tmp:
         work = Path(tmp) / "repo"
         shutil.copytree(ROOT, work, ignore=shutil.ignore_patterns("target", ".bsp", ".git", "states"))
-        source = work / SOURCE
-        pristine = source.read_text()
+        pristine = {path: (work / path).read_text() for path in {SOURCE, PER_KEY, LANES}}
 
         status, secs, tail = run_tests(work, env)
         if status != "passed":
@@ -180,12 +274,13 @@ def main() -> int:
         print(f"[baseline] unmutated suite passes in {secs:.0f}s", flush=True)
 
         for name in names:
-            why, old, new = MUTANTS[name]
-            if pristine.count(old) != 1:
+            path, why, old, new = ALL_MUTANTS[name]
+            source = work / path
+            if pristine[path].count(old) != 1:
                 print(f"[stale ] {name}: pattern not found exactly once; update the mutant", flush=True)
                 survivors.append(name)
                 continue
-            source.write_text(pristine.replace(old, new))
+            source.write_text(pristine[path].replace(old, new))
             status, secs, tail = run_tests(work, env)
             formal = status == "passed" and name in COVERED_FORMALLY
             verdict = "formal" if formal else {"passed": "SURVIVED", "failed": "killed", "invalid": "INVALID"}[status]
@@ -196,7 +291,7 @@ def main() -> int:
                 print(tail[-1500:], flush=True)
             if status != "failed" and not formal:
                 survivors.append(name)
-        source.write_text(pristine)
+            source.write_text(pristine[path])
         # The copy got its own build server; don't leave it running after its directory is gone.
         subprocess.run(["sbt", "-batch", "shutdown"], cwd=work, env=env, capture_output=True, timeout=120)
 

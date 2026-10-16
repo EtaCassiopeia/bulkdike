@@ -6,7 +6,7 @@
 #     UnserialisedAdmission, NoCleanupOnInterrupt, NonAtomicTake      -> a caller is stranded
 #   PerKey.tla        BulkDike.perKey: per-key lanes, one batch in flight per key (safety and liveness)
 #     PerKeyNoBusyGuard   -> a key has two batches in flight
-#     PerKeyNonAtomicTake -> a caller is stranded
+#     PerKeyNonAtomicTake, PerKeyNonAtomicAdmission -> a caller is stranded
 #   FencedWriter.tla  the single-writer-per-key deployment pattern, against a store with conditional appends
 #     FencedWriterUnfenced, FencedWriterNoDedup                         -> a command is applied twice
 #
@@ -42,7 +42,7 @@ passes BulkDike BulkDike
 for variant in UnserialisedAdmission NoCleanupOnInterrupt NonAtomicTake; do fails BulkDike "$variant"; done
 
 passes PerKey PerKey
-for variant in PerKeyNoBusyGuard PerKeyNonAtomicTake; do fails PerKey "$variant"; done
+for variant in PerKeyNoBusyGuard PerKeyNonAtomicTake PerKeyNonAtomicAdmission; do fails PerKey "$variant"; done
 
 passes FencedWriter FencedWriter
 for variant in FencedWriterUnfenced FencedWriterNoDedup; do fails FencedWriter "$variant"; done

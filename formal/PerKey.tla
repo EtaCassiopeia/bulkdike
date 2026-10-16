@@ -12,16 +12,19 @@
 (* interrupts every worker, then stops admission and releases whatever is *)
 (* still waiting, in one transaction.                                     *)
 (*                                                                         *)
-(* Two switches weaken the protocol, to show each mechanism is needed:    *)
-(*   BusyGuard  - a key whose batch is in flight is not taken again       *)
-(*   AtomicTake - taking a batch and recording it as owned by the worker  *)
-(*                is one uninterruptible step                             *)
-(* The implementation has both. Without the first, a key has two batches  *)
-(* in flight; without the second, a caller can be stranded.               *)
+(* Three switches weaken the protocol, to show each mechanism is needed:  *)
+(*   BusyGuard       - a key whose batch is in flight is not taken again  *)
+(*   AtomicTake      - taking a batch and recording it as owned by the    *)
+(*                     worker is one uninterruptible step                 *)
+(*   AtomicAdmission - checking that admission is open and joining the    *)
+(*                     lane are one transaction                           *)
+(* The implementation has all three. Without the first, a key has two     *)
+(* batches in flight; without either of the others, a caller can be       *)
+(* stranded.                                                              *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
-CONSTANTS Callers, Keys, Workers, MaxBatch, MaxQueue, BusyGuard, AtomicTake
+CONSTANTS Callers, Keys, Workers, MaxBatch, MaxQueue, BusyGuard, AtomicTake, AtomicAdmission
 
 ASSUME MaxBatch >= 1 /\ MaxQueue >= MaxBatch
 
@@ -38,9 +41,10 @@ VARIABLES
   taken,    \* inputs a worker has taken and owns until their results are set
   inHand,   \* inputs taken out of a lane but not yet recorded as owned (only without AtomicTake)
   sent,     \* how many batch calls carried each caller's input
-  phase     \* lifecycle of the enclosing scope
+  phase,    \* lifecycle of the enclosing scope
+  pick      \* the key each caller submits to, between check and join (only without AtomicAdmission)
 
-vars == <<caller, promise, lane, admitted, log, busy, open, worker, wkey, taken, inHand, sent, phase>>
+vars == <<caller, promise, lane, admitted, log, busy, open, worker, wkey, taken, inHand, sent, phase, pick>>
 
 NoKey == "none"
 Outcomes == {"succeeded", "failed"}
@@ -49,7 +53,7 @@ Range(s) == {s[i] : i \in 1..Len(s)}
 Queued == {c \in Callers : \E k \in Keys : c \in Range(lane[k])}
 
 TypeOK ==
-  /\ caller \in [Callers -> {"idle", "waiting", "rejected", "refused"}]
+  /\ caller \in [Callers -> {"idle", "admitted", "waiting", "rejected", "refused"}]
   /\ promise \in [Callers -> {"pending", "interrupted"} \cup Outcomes]
   /\ lane \in [Keys -> Seq(Callers)]
   /\ admitted \in [Keys -> Seq(Callers)]
@@ -77,27 +81,40 @@ Init ==
   /\ inHand = [w \in Workers |-> {}]
   /\ sent = [c \in Callers |-> 0]
   /\ phase = "open"
+  /\ pick = [c \in Callers |-> NoKey]
 
 Interrupt(cs) == [c \in Callers |-> IF c \in cs /\ promise[c] = "pending" THEN "interrupted" ELSE promise[c]]
 
-(* `admit`: one transaction checks that admission is open and that the bound holds, and appends to the lane. *)
+Join(c, k) ==
+  IF Cardinality(Queued) < MaxQueue
+  THEN /\ lane' = [lane EXCEPT ![k] = Append(@, c)]
+       /\ admitted' = [admitted EXCEPT ![k] = Append(@, c)]
+       /\ caller' = [caller EXCEPT ![c] = "waiting"]
+  ELSE caller' = [caller EXCEPT ![c] = "rejected"] /\ UNCHANGED <<lane, admitted>>
+
+(* `admit`: one transaction checks that admission is open and that the bound holds, and appends to the lane. The *)
+(* caller's key is fixed from here on, as `pick`.                                                                  *)
 Submit(c, k) ==
   /\ caller[c] = "idle"
   /\ IF ~open
-     THEN caller' = [caller EXCEPT ![c] = "refused"] /\ UNCHANGED <<lane, admitted>>
-     ELSE IF Cardinality(Queued) < MaxQueue
-          THEN /\ lane' = [lane EXCEPT ![k] = Append(@, c)]
-               /\ admitted' = [admitted EXCEPT ![k] = Append(@, c)]
-               /\ caller' = [caller EXCEPT ![c] = "waiting"]
-          ELSE caller' = [caller EXCEPT ![c] = "rejected"] /\ UNCHANGED <<lane, admitted>>
+     THEN caller' = [caller EXCEPT ![c] = "refused"] /\ UNCHANGED <<lane, admitted, pick>>
+     ELSE IF AtomicAdmission
+          THEN Join(c, k) /\ UNCHANGED pick
+          ELSE caller' = [caller EXCEPT ![c] = "admitted"] /\ pick' = [pick EXCEPT ![c] = k] /\ UNCHANGED <<lane, admitted>>
   /\ UNCHANGED <<promise, log, busy, open, worker, wkey, taken, inHand, sent, phase>>
+
+(* Only without AtomicAdmission: the caller joins its lane after, and apart from, the check. *)
+Enter(c) ==
+  /\ caller[c] = "admitted"
+  /\ Join(c, pick[c])
+  /\ UNCHANGED <<promise, log, busy, open, worker, wkey, taken, inHand, sent, phase, pick>>
 
 (* The caller is interrupted while awaiting its result. *)
 Cancel(c) ==
   /\ caller[c] = "waiting"
   /\ promise[c] = "pending"
   /\ promise' = [promise EXCEPT ![c] = "interrupted"]
-  /\ UNCHANGED <<caller, lane, admitted, log, busy, open, worker, wkey, taken, inHand, sent, phase>>
+  /\ UNCHANGED <<caller, lane, admitted, log, busy, open, worker, wkey, taken, inHand, sent, phase, pick>>
 
 Alive(w) == worker[w] # "dead"
 
@@ -116,14 +133,14 @@ Take(w) ==
                THEN taken' = [taken EXCEPT ![w] = got] /\ UNCHANGED inHand
                ELSE inHand' = [inHand EXCEPT ![w] = got] /\ UNCHANGED taken
   /\ worker' = [worker EXCEPT ![w] = "taking"]
-  /\ UNCHANGED <<caller, promise, admitted, log, open, sent, phase>>
+  /\ UNCHANGED <<caller, promise, admitted, log, open, sent, phase, pick>>
 
 (* Only without AtomicTake: the inputs just taken are recorded as owned, in a later step. *)
 Record(w) ==
   /\ inHand[w] # {}
   /\ taken' = [taken EXCEPT ![w] = inHand[w]]
   /\ inHand' = [inHand EXCEPT ![w] = {}]
-  /\ UNCHANGED <<caller, promise, lane, admitted, log, busy, open, worker, wkey, sent, phase>>
+  /\ UNCHANGED <<caller, promise, lane, admitted, log, busy, open, worker, wkey, sent, phase, pick>>
 
 (* `run` leaves out callers interrupted while waiting, and sends the rest in lane order. *)
 Dispatch(w) ==
@@ -135,7 +152,7 @@ Dispatch(w) ==
          /\ sent' = [c \in Callers |-> IF c \in Range(live) THEN sent[c] + 1 ELSE sent[c]]
          /\ taken' = [taken EXCEPT ![w] = Range(live)]
   /\ worker' = [worker EXCEPT ![w] = "running"]
-  /\ UNCHANGED <<caller, promise, lane, admitted, busy, open, wkey, inHand, phase>>
+  /\ UNCHANGED <<caller, promise, lane, admitted, busy, open, wkey, inHand, phase, pick>>
 
 (* The batch call has returned: results are set one caller at a time, interruptibly. *)
 Complete(w, c) ==
@@ -144,7 +161,7 @@ Complete(w, c) ==
   /\ \E outcome \in Outcomes :
        promise' = [promise EXCEPT ![c] = IF @ = "pending" THEN outcome ELSE @]
   /\ taken' = [taken EXCEPT ![w] = @ \ {c}]
-  /\ UNCHANGED <<caller, lane, admitted, log, busy, open, worker, wkey, inHand, sent, phase>>
+  /\ UNCHANGED <<caller, lane, admitted, log, busy, open, worker, wkey, inHand, sent, phase, pick>>
 
 (* `release`: the key may be taken again. *)
 Finish(w) ==
@@ -153,12 +170,12 @@ Finish(w) ==
   /\ busy' = busy \ {wkey[w]}
   /\ worker' = [worker EXCEPT ![w] = "idle"]
   /\ wkey' = [wkey EXCEPT ![w] = NoKey]
-  /\ UNCHANGED <<caller, promise, lane, admitted, log, open, taken, inHand, sent, phase>>
+  /\ UNCHANGED <<caller, promise, lane, admitted, log, open, taken, inHand, sent, phase, pick>>
 
 BeginClose ==
   /\ phase = "open"
   /\ phase' = "closing"
-  /\ UNCHANGED <<caller, promise, lane, admitted, log, busy, open, worker, wkey, taken, inHand, sent>>
+  /\ UNCHANGED <<caller, promise, lane, admitted, log, busy, open, worker, wkey, taken, inHand, sent, pick>>
 
 (* Scope finalizer, part 1: interrupt each worker; its `onInterrupt` releases what it owns. *)
 KillWorker(w) ==
@@ -168,7 +185,7 @@ KillWorker(w) ==
   /\ promise' = Interrupt(taken[w])
   /\ taken' = [taken EXCEPT ![w] = {}]
   /\ inHand' = [inHand EXCEPT ![w] = {}] \* never recorded, so nobody releases them
-  /\ UNCHANGED <<caller, lane, admitted, log, busy, open, wkey, sent, phase>>
+  /\ UNCHANGED <<caller, lane, admitted, log, busy, open, wkey, sent, phase, pick>>
 
 (* Scope finalizer, part 2 (`close`): one transaction stops admission and empties every lane. *)
 Close ==
@@ -178,17 +195,18 @@ Close ==
   /\ promise' = Interrupt(Queued)
   /\ lane' = [k \in Keys |-> <<>>]
   /\ phase' = "closed"
-  /\ UNCHANGED <<caller, admitted, log, busy, worker, wkey, taken, inHand, sent>>
+  /\ UNCHANGED <<caller, admitted, log, busy, worker, wkey, taken, inHand, sent, pick>>
 
 WorkerStep(w) == Take(w) \/ Record(w) \/ Dispatch(w) \/ Finish(w) \/ \E c \in Callers : Complete(w, c)
 
 Next ==
-  \/ \E c \in Callers : Cancel(c) \/ \E k \in Keys : Submit(c, k)
+  \/ \E c \in Callers : Cancel(c) \/ Enter(c) \/ \E k \in Keys : Submit(c, k)
   \/ \E w \in Workers : WorkerStep(w) \/ KillWorker(w)
   \/ BeginClose \/ Close
 
 Fairness ==
   /\ \A w \in Workers : WF_vars(WorkerStep(w)) /\ WF_vars(KillWorker(w))
+  /\ \A c \in Callers : WF_vars(Enter(c))
   /\ WF_vars(Close)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
