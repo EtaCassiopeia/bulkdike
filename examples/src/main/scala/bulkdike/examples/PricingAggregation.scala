@@ -30,6 +30,7 @@ object PricingAggregation extends ZIOAppDefault:
       for
         calls <- Ref.make(0)
         api = PricingApi(calls)
+        // --8<-- [start:resilience]
         timeout <- Timeout.make(1.second)
         retry   <- Retry.make(min = 10.millis, max = 100.millis, maxRetries = Some(2))
         breaker <- CircuitBreaker.withMaxFailures[Any](maxFailures = 5)
@@ -40,6 +41,7 @@ object PricingAggregation extends ZIOAppDefault:
         prices <- BulkDike.keyed(config)((countries: NonEmptyChunk[String]) =>
           breaker(retry(timeout(api.fetch(countries))))
         )
+        // --8<-- [end:resilience]
         wanted = List("NL", "CN", "US", "NL", "DE", "CN", "US", "NL", "CN", "FR", "US", "NL")
         answers <- ZIO.foreachPar(wanted)(country => prices(country).either.map(country -> _))
         _       <- ZIO.foreachDiscard(answers) { (country, answer) =>

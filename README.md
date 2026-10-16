@@ -1,70 +1,38 @@
 # BulkDike
 
+[![CI](https://github.com/EtaCassiopeia/bulkdike/actions/workflows/ci.yml/badge.svg)](https://github.com/EtaCassiopeia/bulkdike/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-etacassiopeia.github.io%2Fbulkdike-blue)](https://etacassiopeia.github.io/bulkdike/)
+
 A ZIO 2 micro-batching bulkhead. It coalesces concurrent calls into batched calls to an external system, caps how
 many batches run at once and how many inputs may wait, and gives each caller its own share of the result.
 
-It is a Scala 3 rewrite of the queueing core of
-[api-aggregation-service](https://github.com/EtaCassiopeia/api-aggregation-service), inspired by
-[rezilience](https://github.com/svroonland/rezilience).
+**[Documentation](https://etacassiopeia.github.io/bulkdike/)**: [getting started](https://etacassiopeia.github.io/bulkdike/getting-started/),
+[guide](https://etacassiopeia.github.io/bulkdike/guide/batching/),
+[architecture](https://etacassiopeia.github.io/bulkdike/architecture/),
+[verification](https://etacassiopeia.github.io/bulkdike/verification/),
+[API](https://etacassiopeia.github.io/bulkdike/api/).
 
 ```scala
-val config = BulkDikeConfig.make(
-  maxBatchSize       = 5,         // dispatch when 5 inputs are waiting
-  maxBatchDelay      = 5.seconds, // or 5s after the oldest arrived
-  maxInFlightBatches = 2,         // concurrent batch calls
-  maxQueueing        = 50         // beyond this, reject immediately
-)
-
 for
-  cfg   <- ZIO.fromEither(config)
+  cfg   <- ZIO.fromEither(BulkDikeConfig.make(maxBatchSize = 5, maxBatchDelay = 5.millis, maxInFlightBatches = 2, maxQueueing = 50))
   dike  <- BulkDike.keyed(cfg)((countries: NonEmptyChunk[String]) => pricingApi.fetch(countries))
   price <- dike("NL") // IO[BulkDikeError[E], Option[Price]]
 yield price
 ```
 
-`BulkDike.make(config)(call)(extract)` handles batch results that aren't maps.
-
 For writes that must stay in order per entity, `BulkDike.perKey` batches each key separately, with at most one call in
-flight per key. Only busy keys are batched: an idle key's input is sent at once by its caller, and a key's next batch
-leaves as soon as its previous call completes, so batches grow with load instead of waiting on a timer:
+flight per key. Idle keys are not batched at all; busy keys get batches that grow with load, sent in an
+[order](https://etacassiopeia.github.io/bulkdike/guide/ordering/) of your choice. `FoldWrite` packages the fenced,
+idempotent "read once, apply, conditional write" call to pair it with.
 
-```scala
-for
-  cfg    <- ZIO.fromEither(PerKeyConfig.make(maxBatchSize = 25, maxInFlightBatches = 8, maxQueueing = 1000))
-  writer <- BulkDike.perKey(cfg, (e: Entry) => e.entity)((entity, entries) => store.append(entity, entries))(
-              (entry, outcomes) => outcomes(entry.id)
-            )
-yield writer
-```
-
-An `Order` sends a key's waiting inputs by a rank of your choice, such as an effective date, and `FoldWrite` packages
-the fenced, idempotent "read once, apply, conditional write" call it is meant to pair with. See the
-[ordered-writes example](examples/src/main/scala/bulkdike/examples/OrderedWrites.scala).
-
-## Behaviour
-
-- A failed batch call fails every caller in the batch with `BulkDikeError.Failed(e)`; later calls are still served.
-- When the queue is full, callers get `BulkDikeError.Rejected` straight away.
-- An interrupted caller's input is dropped from its batch.
-- Closing the scope interrupts every waiting caller; none is left hanging.
-- `perKey` can also bound batches and the waiting room by weight (e.g. bytes), not just by count.
-
-Put retries, timeouts and circuit breakers around the batch call. See the
-[example](examples/src/main/scala/bulkdike/examples/PricingAggregation.scala), which uses rezilience for this.
-
-## Verification
-
-- **Unit, model-based, simulation and stress tests**: random workloads run on virtual time and on the real scheduler.
-  Every trace is checked against the contract.
-- **Fault-injection simulation** of the per-key pattern: crashes, lost responses, late writes and misrouted clients.
-- **TLA+** (`formal/`): TLC checks every interleaving of both protocols and of the fenced-writer pattern, with
-  weakened variants that must fail.
-
-Design decisions and their reasons are recorded in [`docs/decisions`](docs/decisions/README.md).
+Every caller gets an answer, overload fails fast, and per-key order holds. This is checked by fault-injecting
+simulations, stress tests and TLA+ models with weakened variants that must fail.
 
 ```sh
-sbt test
+sbt testFull
 formal/check.sh path/to/tla2tools.jar
 ```
 
-Scala 3.3 LTS / 3.9, ZIO 2.1, sbt 2, JDK 17+. Apache 2.0.
+A Scala 3 rewrite of the queueing core of
+[api-aggregation-service](https://github.com/EtaCassiopeia/api-aggregation-service), inspired by
+[rezilience](https://github.com/svroonland/rezilience). Scala 3.3 LTS / 3.9, ZIO 2.1, sbt 2, JDK 17+. Apache 2.0.

@@ -33,7 +33,14 @@ lazy val core = project
       "dev.zio" %% "zio-test"     % zioVersion % Test,
       "dev.zio" %% "zio-test-sbt" % zioVersion % Test
     ),
-    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    // The API reference published with the documentation site
+    Compile / doc / scalacOptions ++= Seq(
+      "-social-links:github::https://github.com/EtaCassiopeia/bulkdike",
+      "-source-links:github://EtaCassiopeia/bulkdike/main",
+      "-sourceroot",
+      (ThisBuild / baseDirectory).value.getAbsolutePath
+    )
   )
 
 lazy val examples = project

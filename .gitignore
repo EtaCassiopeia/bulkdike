@@ -8,3 +8,5 @@ project/project/
 metals.sbt
 .DS_Store
 __pycache__/
+.venv/
+site/
