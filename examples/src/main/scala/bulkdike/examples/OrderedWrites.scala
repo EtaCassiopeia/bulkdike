@@ -39,6 +39,7 @@ object OrderedWrites extends ZIOAppDefault:
           }.absolve
       }
 
+  // --8<-- [start:step]
   /**
    * Applies one entry to an entity's log as read: an invalid entry is rejected without failing the others, and an entry
    * already in the log (a retried write may have landed) is answered with its position instead of being appended again.
@@ -47,7 +48,9 @@ object OrderedWrites extends ZIOAppDefault:
     if entry.amount == 0 then log -> Left("amount must not be zero")
     else if log.contains(entry.id) then log -> Right(log.indexOf(entry.id))
     else (log :+ entry.id)                  -> Right(log.size)
+  // --8<-- [end:step]
 
+  // --8<-- [start:fold]
   /**
    * One round trip per batch: read the log, apply the entries, and append what is new only if the log has not changed
    * since it was read. Only a store error fails, and retries, the whole batch.
@@ -60,6 +63,7 @@ object OrderedWrites extends ZIOAppDefault:
       write = (entity, before, after) => store.append(entity, before.size, Chunk.fromIterable(after.drop(before.size))),
       retry = Schedule.exponential(10.millis).jittered && Schedule.recurs(5)
     )
+  // --8<-- [end:fold]
 
   val run =
     ZIO.scoped {
@@ -67,6 +71,7 @@ object OrderedWrites extends ZIOAppDefault:
         logs     <- Ref.make(Map.empty[String, Vector[String]])
         requests <- Ref.make(0)
         store = Store(logs, requests)
+        // --8<-- [start:wiring]
         config <- ZIO.fromEither(
           // No delay: an entity's entries wait only while its previous write is in flight, and a quiet entity's entry is
           // written at once. A small positive delay would let more out-of-order entries meet and be sorted, at that
@@ -80,6 +85,7 @@ object OrderedWrites extends ZIOAppDefault:
           (e: Entry) => 40L + e.id.length,
           Order.by((_: Entry).effectiveDay)
         )(fold.call)(fold.outcome)
+        // --8<-- [end:wiring]
         entries = Chunk.tabulate(300) { n =>
           val entity = if n % 5 == 0 then s"quiet-${n % 3}" else "busy" // most traffic goes to one entity
           val day    = 20000L + n / 10 - (if n % 11 == 0 then 3 else 0) // every eleventh entry is back-dated
