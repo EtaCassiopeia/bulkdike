@@ -1,6 +1,6 @@
 # 0002. Verify with tests, model checking and mutation testing together
 
-Status: Accepted
+Status: Accepted. The mutation-testing layer is superseded by [0009](0009-drop-mutation-testing.md).
 
 ## Context
 

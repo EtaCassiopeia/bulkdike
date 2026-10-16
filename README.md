@@ -58,16 +58,12 @@ Put retries, timeouts and circuit breakers around the batch call. See the
 - **Fault-injection simulation** of the per-key pattern: crashes, lost responses, late writes and misrouted clients.
 - **TLA+** (`formal/`): TLC checks every interleaving of both protocols and of the fenced-writer pattern, with
   weakened variants that must fail.
-- **Mutation testing**: Stryker4s, plus 29 hand-written concurrency bugs (`mutation/`). All are caught by the tests or
-  the formal model.
 
 Design decisions and their reasons are recorded in [`docs/decisions`](docs/decisions/README.md).
 
 ```sh
 sbt test
 formal/check.sh path/to/tla2tools.jar
-sbt core/stryker
-python3 mutation/semantic-mutants.py
 ```
 
 Scala 3.3 LTS / 3.9, ZIO 2.1, sbt 2, JDK 17+. Apache 2.0.

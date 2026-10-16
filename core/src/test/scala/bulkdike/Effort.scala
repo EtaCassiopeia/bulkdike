@@ -5,9 +5,8 @@ import zio.test.{TestAspect, TestAspectPoly}
 
 /**
  * How hard the randomised suites try. Environment overrides:
- *   - `BULKDIKE_SAMPLES`: every sample and repetition count, e.g. to search much longer before a release, or to keep a
- *     mutation-testing run (one full test run per mutant) affordable.
- *   - `BULKDIKE_TEST_TIMEOUT_SECONDS`: the per-test time limit, so a mutant that makes callers hang is reported
+ *   - `BULKDIKE_SAMPLES`: every sample and repetition count, e.g. to search much longer before a release.
+ *   - `BULKDIKE_TEST_TIMEOUT_SECONDS`: the per-test time limit, so a change that makes callers hang is reported
  *     quickly.
  */
 object Effort:
