@@ -114,8 +114,10 @@ object PerKeySimulation:
         for
           at    <- nowMs
           _     <- submitted.update(_ + (sub.input.id -> at))
-          fiber <- dike(sub.input).onExit(e => outcomes.update(_ + (sub.input.id -> classify(e)))).forkIn(clients)
-          _     <- ZIO.foreachDiscard(sub.cancelAfterMs) { after =>
+          fiber <- dike(sub.input).forkIn(clients)
+          // Awaited from outside: a caller interrupted before it even started still has an outcome.
+          _ <- fiber.await.flatMap(e => outcomes.update(_ + (sub.input.id -> classify(e)))).forkIn(clients)
+          _ <- ZIO.foreachDiscard(sub.cancelAfterMs) { after =>
             (ZIO.sleep(after.millis) *> nowMs.flatMap(t => cancelled.update(_ + (sub.input.id -> t))) *>
               fiber.interrupt).forkIn(clients)
           }

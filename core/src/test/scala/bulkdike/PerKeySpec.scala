@@ -31,10 +31,11 @@ object PerKeySpec extends ZIOSpecDefault:
   private def dike(cfg: PerKeyConfig, down: Downstream, held: Set[String] = Set.empty) =
     BulkDike.perKey(cfg, (_: (String, Int))._1)(down.call(held))((input, _) => input._2)
 
+  /** Waits until `fiber` is parked awaiting its result, or already done: either way, its input was admitted. */
   private def suspended(fiber: Fiber.Runtime[?, ?]): UIO[Unit] =
     fiber.status.repeatUntil {
-      case _: Fiber.Status.Suspended => true
-      case _                         => false
+      case _: Fiber.Status.Running => false
+      case _                       => true
     }.unit
 
   private def metricsReach(dike: BulkDike[?, ?, ?])(p: BulkDike.Metrics => Boolean): UIO[Unit] =
