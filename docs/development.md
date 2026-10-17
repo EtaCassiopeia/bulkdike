@@ -51,8 +51,17 @@ them.
 
 The build runs in strict mode: a broken link or a missing snippet fails it.
 
-The animation in the README and on the home page, `docs/assets/ferry.svg`, is generated: edit
-`scripts/ferry-svg.py` and run `python3 scripts/ferry-svg.py`.
+The animations (`docs/assets/*.svg`) are generated, one scene per module in `scripts/visuals/`, on a shared frame
+and timeline in `hud.py`. Edit a scene, then regenerate:
+
+```sh
+python3 scripts/visuals/build.py            # every scene
+python3 scripts/visuals/build.py lanes      # one scene
+```
+
+An element is drawn at the origin and moved by `Scene.path`, which takes the points it passes through as
+`(seconds, x, y[, opacity])`; `Scene.shown` fades an element in and out over time windows. Every animation in a scene
+shares one loop, so a scene's story must end in the state it starts in.
 
 ## Releasing
 

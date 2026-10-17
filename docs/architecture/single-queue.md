@@ -3,6 +3,8 @@
 `make` (and `keyed`, which is built on it) batches one undifferentiated stream. Its design is recorded in
 [0001](../decisions/0001-single-queue-batcher.md).
 
+![Ferry.make in motion](../assets/single-queue.svg)
+
 ## Parts
 
 | Part | What it is | Why |

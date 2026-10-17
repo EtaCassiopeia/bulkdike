@@ -34,21 +34,7 @@ the store does, because it holds the key's state.
 - **An input that arrives after inputs of a higher rank were already sent is not held back or rejected.** It goes in
   the key's next batch, in rank order among whatever is waiting then, and the store places it.
 
-```mermaid
-sequenceDiagram
-  participant C as callers of key k
-  participant D as perKey with Order.by(day)
-  participant S as store
-  C->>D: day 5
-  D->>S: call(k, [day 5])
-  C->>D: day 7, day 6, day 3
-  S-->>D: done
-  D->>S: call(k, [day 3, day 6, day 7])
-  C->>D: day 4 (late: day 7 already sent)
-  S-->>D: done
-  D->>S: call(k, [day 4])
-  Note over S: the store places day 4 among what it holds
-```
+![Inputs are sorted by rank as they wait; a late input rides the next call](../assets/ordering.svg)
 
 To give out-of-order inputs more time to meet, set a positive `maxBatchDelay`. A partial batch then waits up to that
 long after its oldest input arrived, whatever that input's rank. The cost is that much latency on every input, and the

@@ -11,6 +11,8 @@ The design is recorded in [0003](../decisions/0003-per-key-batching.md),
 [0004](../decisions/0004-dispatch-on-completion.md), [0010](../decisions/0010-direct-calls-for-idle-keys.md) and
 [0011](../decisions/0011-pluggable-dispatch-order.md).
 
+![Lanes, the ready line and the worker in motion](../assets/lanes.svg)
+
 ## The waiting room
 
 | Field | Holds |
