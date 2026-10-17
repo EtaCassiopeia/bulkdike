@@ -35,20 +35,7 @@ call completes and a worker is free, and it carries everything that arrived in t
 This is the group-commit pattern. A fixed delay is right at one load only; dispatching on completion adapts to every
 load. See [0004](../decisions/0004-dispatch-on-completion.md).
 
-```mermaid
-sequenceDiagram
-  participant C as callers of key k
-  participant D as perKey
-  participant S as store
-  C->>D: input 1 (k is idle)
-  D->>S: call(k, [1])
-  C->>D: inputs 2, 3, 4 (k is busy: they wait)
-  S-->>D: done
-  D->>S: call(k, [2, 3, 4])
-  C->>D: input 5 (waits)
-  S-->>D: done
-  D->>S: call(k, [5])
-```
+![An idle key is sent at once; a busy key's inputs leave together in its next call](../assets/ferry.svg)
 
 ## Only busy keys are batched
 

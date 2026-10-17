@@ -8,16 +8,7 @@ There are two ways to process a batch of a key's inputs:
 
 ## The round trip
 
-```mermaid
-flowchart LR
-  r[read key's state] --> a["apply each input:<br/>step(state, input)"]
-  a --> c{changed?}
-  c -- no --> o[answer each input]
-  c -- yes --> w["write(key, before, after)<br/>only if the store still holds before"]
-  w -- ok --> o
-  w -- conflict or error --> b[back off] --> r
-  r -- error --> b
-```
+![Read once, apply in memory, write if unchanged; a conflict retries](../assets/fold-write.svg)
 
 `FoldWrite(id, read, step, write, retry)`:
 

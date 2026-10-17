@@ -25,18 +25,7 @@ which must:
 
 [`FoldWrite`](../guide/fold-write.md) is this round trip.
 
-```mermaid
-flowchart LR
-  cl[clients] -- "route by hash(key)" --> p1 & p2
-  subgraph p1 [process 1]
-    d1[perKey]
-  end
-  subgraph p2 [process 2]
-    d2[perKey]
-  end
-  d1 -- "conditional write" --> st[(store:<br/>source of truth)]
-  d2 -- "conditional write<br/>(refused if stale)" --> st
-```
+![The fence refuses a stale writer; deduplication answers a retry](../assets/fleet.svg)
 
 Both safeguards are needed, and each is shown to be needed:
 

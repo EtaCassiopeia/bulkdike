@@ -16,21 +16,7 @@ At most `maxInFlightBatches` batch calls run at once. While every slot is busy, 
 deadline passed while it waited is sent as soon as a slot frees, and its wait does not start over. When
 `maxQueueing` inputs are already waiting, a new call fails at once with `FerryError.Rejected`.
 
-```mermaid
-sequenceDiagram
-  participant A as caller A
-  participant B as caller B
-  participant D as Ferry
-  participant S as external system
-  A->>D: ferry(a)
-  Note over D: oldest input: deadline = now + maxBatchDelay
-  B->>D: ferry(b)
-  Note over D: batch full, or deadline reached
-  D->>S: call([a, b])
-  S-->>D: result
-  D-->>A: extract(a, result)
-  D-->>B: extract(b, result)
-```
+![Ferry.make: a batch leaves when full or due; a full queue rejects](../assets/single-queue.svg)
 
 ## `keyed`: one result per distinct input
 
