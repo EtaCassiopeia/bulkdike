@@ -77,6 +77,9 @@ jobs:
           set -euo pipefail
           export GITHUB_REF="refs/tags/${TAG}"
           export CI_COMMIT_TAG="${TAG}"
+          # The sbt 2 client reuses the server the Test step started, whose environment has none of the
+          # variables below: stop it, so ci-release runs in a server that sees them.
+          sbt shutdown || true
           LOG="${RUNNER_TEMP}/ci-release.log"
           sbt ci-release 2>&1 | tee "${LOG}"
           if grep -q 'doing nothing' "${LOG}" || ! grep -q 'publishing a stable release' "${LOG}"; then
