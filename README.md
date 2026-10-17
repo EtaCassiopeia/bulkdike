@@ -6,6 +6,7 @@
 </h1>
 
 [![CI](https://github.com/EtaCassiopeia/zio-ferry/actions/workflows/ci.yml/badge.svg)](https://github.com/EtaCassiopeia/zio-ferry/actions/workflows/ci.yml)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.etacassiopeia/zio-ferry_3)](https://central.sonatype.com/artifact/io.github.etacassiopeia/zio-ferry_3)
 [![Docs](https://img.shields.io/badge/docs-etacassiopeia.github.io%2Fzio-ferry-blue)](https://etacassiopeia.github.io/zio-ferry/)
 
 A ZIO 2 micro-batching bulkhead. It coalesces concurrent calls into batched calls to an external system, caps how
@@ -20,6 +21,10 @@ many batches run at once and how many inputs may wait, and gives each caller its
 [architecture](https://etacassiopeia.github.io/zio-ferry/architecture/),
 [verification](https://etacassiopeia.github.io/zio-ferry/verification/),
 [API](https://etacassiopeia.github.io/zio-ferry/api/).
+
+```scala
+libraryDependencies += "io.github.etacassiopeia" %% "zio-ferry" % "0.1.0"
+```
 
 ```scala
 for

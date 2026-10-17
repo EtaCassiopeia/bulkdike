@@ -8,11 +8,20 @@ inThisBuild(
     organization       := "io.github.etacassiopeia",
     scalaVersion       := scalaLts,
     crossScalaVersions := Seq(scalaLts, scalaNext),
-    homepage           := Some(uri("https://github.com/EtaCassiopeia/zio-ferry")),
+    description        := "A ZIO 2 micro-batching bulkhead that keeps per-key order",
+    homepage           := Some(uri("https://etacassiopeia.github.io/zio-ferry/")),
     licenses           := List("Apache-2.0" -> uri("https://www.apache.org/licenses/LICENSE-2.0")),
-    developers         := List(
+    scmInfo            := Some(
+      ScmInfo(
+        uri("https://github.com/EtaCassiopeia/zio-ferry"),
+        "scm:git:https://github.com/EtaCassiopeia/zio-ferry.git"
+      )
+    ),
+    developers := List(
       Developer("EtaCassiopeia", "EtaCassiopeia", "zainalpour@gmail.com", uri("https://github.com/EtaCassiopeia"))
-    )
+    ),
+    // The version comes from the git tag (sbt-dynver, via sbt-ci-release): v0.1.0 publishes 0.1.0
+    versionScheme := Some("early-semver")
   )
 )
 

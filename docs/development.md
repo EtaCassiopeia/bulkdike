@@ -54,6 +54,30 @@ The build runs in strict mode: a broken link or a missing snippet fails it.
 The animation in the README and on the home page, `docs/assets/ferry.svg`, is generated: edit
 `scripts/ferry-svg.py` and run `python3 scripts/ferry-svg.py`.
 
+## Releasing
+
+Push a tag from `main`:
+
+```sh
+git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` then:
+
+1. runs the format check and every test on JDK 17;
+2. publishes `zio-ferry_3`, compiled with Scala 3.3, signed, to Maven Central, with the version taken from the tag;
+3. creates the GitHub Release, with notes generated from the merged pull requests;
+4. stamps the version into the install snippets in `README.md` and `docs/getting-started.md`, and redeploys the
+   site.
+
+A tag with a suffix, such as `v0.2.0-RC1`, is a pre-release: it is published, but the snippets stay as they are. A
+version already on Maven Central is never published twice, so a failed run can be re-run from the Actions tab
+(`Release` → *Run workflow* with the tag).
+
+The workflow uses four repository secrets: `SONATYPE_USERNAME` and `SONATYPE_PASSWORD` (a Central Portal user
+token for the `io.github.etacassiopeia` namespace), and `PGP_SECRET` (the base64 of the ASCII-armored secret key)
+and `PGP_PASSPHRASE`. The key's public half is on keys.openpgp.org.
+
 ## Decision records
 
 A design decision gets a record in `docs/decisions`: context, decision, consequences. Records are not edited after the
