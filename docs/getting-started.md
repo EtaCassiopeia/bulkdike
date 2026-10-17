@@ -8,21 +8,13 @@
 
 ## Add the dependency
 
-Ferry is not yet published to Maven Central. Until it is, publish it to your local repository:
-
-```sh
-git clone https://github.com/EtaCassiopeia/zio-ferry.git
-cd zio-ferry
-sbt core/publishLocal
-```
-
-Then depend on it:
+Ferry is published to Maven Central:
 
 ```scala
-libraryDependencies += "io.github.etacassiopeia" %% "zio-ferry" % "0.1.0-SNAPSHOT"
+libraryDependencies += "io.github.etacassiopeia" %% "zio-ferry" % "0.1.0"
 ```
 
-Its only dependency is ZIO itself.
+Its only dependency is ZIO itself. Versions follow early semver: before 1.0, a minor version may change the API.
 
 ## A first ferry
 

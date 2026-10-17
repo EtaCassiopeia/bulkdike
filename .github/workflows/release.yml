@@ -1,0 +1,153 @@
+# Publishes a vX.Y.Z tag to Maven Central, then creates its GitHub Release and stamps the install snippets.
+# Push a tag to release; `workflow_dispatch` re-runs the whole thing for an existing tag, and every job is
+# safe to re-run: a version already on Maven Central is not published again.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing vX.Y.Z tag to release"
+        required: true
+        type: string
+
+# The tag being released: on a dispatch, github.ref_name is the branch the run was launched from.
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to Maven Central
+    runs-on: ubuntu-latest
+    steps:
+      # sbt-dynver reads the version from the checked-out tag, so check out the tag, with its history.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - name: Check the tag
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "${TAG}" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::'${TAG}' is not a vX.Y.Z tag; refusing to publish."
+            exit 1
+          fi
+          git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null \
+            || { echo "::error::Tag ${TAG} does not exist on origin."; exit 1; }
+      # A re-run must not upload again. Anything but a clear 200 or 404 stops the run.
+      - name: Skip if already on Maven Central
+        id: central
+        run: |
+          set -euo pipefail
+          URL="https://repo1.maven.org/maven2/io/github/etacassiopeia/zio-ferry_3/${TAG#v}/"
+          CODE="$(curl -sS -o /dev/null -w '%{http_code}' "${URL}" || true)"
+          case "${CODE}" in
+            200) echo "::notice::${TAG#v} is already on Maven Central."; echo "published=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "published=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::Could not tell whether ${TAG#v} is on Maven Central (HTTP '${CODE}')."; exit 1 ;;
+          esac
+      # JDK 17, the oldest supported, so the published classes run on every supported JDK.
+      - uses: actions/setup-java@v5
+        if: steps.central.outputs.published != 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+        if: steps.central.outputs.published != 'true'
+      - name: Test
+        if: steps.central.outputs.published != 'true'
+        run: sbt "check; testFull"
+      # sbt-ci-release takes the release path only when GITHUB_REF is a tag, which on a dispatch it is not:
+      # set it from the tag. CI_RELEASE publishes the Scala 3.3 build only (no `+`): the 3.9 build would
+      # replace it under the same `_3` artifact, and 3.3 users could not read it. The log checks make sure a
+      # run that published nothing never reports success.
+      - name: Publish
+        if: steps.central.outputs.published != 'true'
+        run: |
+          set -euo pipefail
+          export GITHUB_REF="refs/tags/${TAG}"
+          export CI_COMMIT_TAG="${TAG}"
+          LOG="${RUNNER_TEMP}/ci-release.log"
+          sbt ci-release 2>&1 | tee "${LOG}"
+          if grep -q 'doing nothing' "${LOG}" || ! grep -q 'publishing a stable release' "${LOG}"; then
+            echo "::error::ci-release did not publish ${TAG}."
+            exit 1
+          fi
+        env:
+          CI_RELEASE: publishSigned
+          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+          PGP_SECRET: ${{ secrets.PGP_SECRET }}
+          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+
+  # Only after the artifacts are published, so a failed publish never leaves a Release behind.
+  github-release:
+    name: GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - name: Create the GitHub Release
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists."
+            exit 0
+          fi
+          case "${TAG}" in
+            *-*) flags="--prerelease" ;;
+            *) flags="--latest" ;;
+          esac
+          gh release create "${TAG}" --verify-tag --title "${TAG}" --generate-notes ${flags}
+
+  # The install snippets name the version by hand: stamp them to the release. Pre-releases leave them alone.
+  stamp:
+    name: Stamp the install snippets
+    needs: github-release
+    if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - name: Stamp and push
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          sed -E -i "s#(\"zio-ferry\" % )\"[^\"]+\"#\1\"${VERSION}\"#g" README.md docs/getting-started.md
+          if git diff --quiet; then
+            echo "The install snippets already show ${VERSION}."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Show ${VERSION} in the install snippets"
+          # The release is done either way: a rejected push (main moved meanwhile) is a warning.
+          if git push origin HEAD:main; then
+            # A push with this token starts no workflow; start the docs deploy explicitly.
+            gh workflow run docs.yml --ref main
+          else
+            echo "::warning::Could not push the ${VERSION} stamp; update the snippets by hand."
+          fi
